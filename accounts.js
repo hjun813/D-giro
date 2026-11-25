@@ -129,7 +129,7 @@ export function createAccountApi(accounts, { origin } = {}) {
     const route = `${request.method} ${path}`;
 
     if (route === 'GET /api/session') return sendJson(response, 200, view(user));
-    if (request.headers.origin && request.headers.origin !== expectedOrigin) {
+    if (request.headers.origin !== expectedOrigin) {
       return sendJson(response, 403, { message: '요청 주소가 일치하지 않아요.' });
     }
     if (route === 'POST /api/auth/logout') {

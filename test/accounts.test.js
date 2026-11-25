@@ -14,7 +14,7 @@ async function request(api, method, path, { data, cookie, from = origin } = {}) 
   const stream = Readable.from(data ? [Buffer.from(JSON.stringify(data))] : []);
   stream.method = method;
   stream.socket = { remoteAddress: '127.0.0.1' };
-  stream.headers = { host: new URL(origin).host, origin: from, cookie, 'content-type': 'application/json' };
+  stream.headers = { host: new URL(origin).host, ...(from === null ? {} : { origin: from }), cookie, 'content-type': 'application/json' };
 
   const result = {};
   await api(stream, {
@@ -41,6 +41,8 @@ test('회원 가입, 로그인, 계정별 관심 등록·해제, 로그아웃을
   const add = { targetId, watched: true, accountId: first.body.user.id };
   assert.equal((await request(api, 'PUT', '/api/watchlist', { data: add })).status, 401);
   assert.equal((await request(api, 'PUT', '/api/watchlist', { cookie, data: add, from: 'https://other.example' })).status, 403);
+  assert.equal((await request(api, 'PUT', '/api/watchlist', { cookie, data: add, from: null })).status, 403);
+  assert.equal((await request(api, 'POST', '/api/auth/logout', { cookie, from: null })).status, 403);
   assert.equal((await request(api, 'PUT', '/api/watchlist', { cookie: otherCookie, data: add })).status, 409);
   assert.equal((await request(api, 'PUT', '/api/watchlist', { cookie, data: { targetId: 'unknown', watched: true } })).status, 400);
   for (let index = 0; index < 2; index += 1) {

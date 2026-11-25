@@ -33,6 +33,21 @@ export function normalizeKakaoResult(result) {
   return fixture ? { ...item, id: fixture.id, name: fixture.name, subtitle: fixture.subtitle } : item;
 }
 
+export function dedupeKakaoResults(rawResults) {
+  const results = [];
+  const seenIds = new Set();
+  for (const result of rawResults.map(normalizeKakaoResult)) {
+    if (!result.coordinates.every(Number.isFinite) || seenIds.has(result.id)) continue;
+    const duplicatePlace = results.some((existing) =>
+      normalize(existing.name) === normalize(result.name) &&
+      existing.coordinates.every((coordinate, index) => Math.abs(coordinate - result.coordinates[index]) < 0.0002));
+    if (duplicatePlace) continue;
+    seenIds.add(result.id);
+    results.push(result);
+  }
+  return results;
+}
+
 export async function connectKakaoMap(container, onSelect) {
   const response = await fetch('/map-config.json');
   if (!response.ok) throw new Error('지도 설정을 불러오지 못했습니다.');
@@ -112,11 +127,7 @@ export async function connectKakaoMap(container, onSelect) {
       if (!raw.length && outcomes.some((outcome) => outcome.status === 'rejected')) {
         throw new Error('검색을 완료하지 못했습니다.');
       }
-      const results = new Map();
-      for (const result of raw.map(normalizeKakaoResult)) {
-        if (!results.has(result.id) && result.coordinates.every(Number.isFinite)) results.set(result.id, result);
-      }
-      return [...results.values()];
+      return dedupeKakaoResults(raw);
     },
     setPins(items, activeId, documentStatus) {
       overlays.forEach((overlay) => overlay.setMap(null));

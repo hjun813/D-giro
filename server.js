@@ -29,11 +29,15 @@ const samplePaths = samples.map((sample) => {
   return [sample.id, path];
 });
 
+let cachedSampleIndex;
 async function sampleIndex() {
-  return Object.fromEntries(await Promise.all(samplePaths.map(async ([id, path]) => {
-    const data = await readFile(new URL(path, import.meta.url));
-    return [createHash('sha256').update(data).digest('hex'), id];
-  })));
+  if (!cachedSampleIndex) {
+    cachedSampleIndex = Object.fromEntries(await Promise.all(samplePaths.map(async ([id, path]) => {
+      const data = await readFile(new URL(path, import.meta.url));
+      return [createHash('sha256').update(data).digest('hex'), id];
+    })));
+  }
+  return cachedSampleIndex;
 }
 
 const server = createServer(async (request, response) => {
@@ -96,3 +100,16 @@ const server = createServer(async (request, response) => {
 server.listen(port, '127.0.0.1', () => {
   console.log(`등기로 MVP: http://localhost:${server.address().port}/`);
 });
+
+let closing = false;
+function shutdown() {
+  if (closing) return;
+  closing = true;
+  server.close(() => {
+    accounts.close();
+    process.exit(0);
+  });
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

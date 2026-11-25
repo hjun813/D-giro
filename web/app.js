@@ -166,6 +166,7 @@ function renderTargetDetail(target) {
   const event = events.at(-1);
   const watched = activeWatches().includes(target.id);
   const share = account ? '' : button('등기 자료 공유', 'share', { kind: latest ? 'secondary' : 'primary' });
+  const accountHint = account ? '<p class="muted">모의 자료 공유와 변동 확인은 로그아웃 후 테스트 사용자에서 검증할 수 있어요.</p>' : '';
   return `<section class="detail-section"><div class="section-title"><h3>공유 등기 자료</h3>${needsUpdate(data, target.id) ? badge('문서 갱신 필요', 'warning') : ''}</div>
     ${latest ? `<dl class="detail-list"><div><dt>발급 시각</dt><dd>${formatTime(latest.issuedAt)}</dd></div><div><dt>서비스 등록</dt><dd>${formatTime(latest.registeredAt)}</dd></div></dl>
       <div class="button-row">${button('공유 등기 보기', 'document', { id: latest.sampleId, kind: 'primary' })}${share}</div>` :
@@ -174,6 +175,7 @@ function renderTargetDetail(target) {
   <section class="detail-section"><div class="section-title"><h3>변동 확인</h3>${status(check?.outcome)}</div>
     <dl class="detail-list"><div><dt>마지막 확인 성공</dt><dd>${formatTime(check?.lastSuccessAt)}</dd></div>
       ${event ? `<div><dt>확인된 신청 상태</dt><dd>${statusLabels[event.kind][0]}</dd></div>` : ''}</dl>
+    ${accountHint}
     <div class="button-row">${button(watched ? '관심 해제' : '관심 등록', 'watch', { id: target.id, disabled: accountLoading || accountPending })}
       ${button('이력 보기', 'history', { id: target.id, kind: 'quiet' })}</div>
   </section>`;
@@ -221,6 +223,7 @@ function renderAlertsPage() {
   return `<div class="page-heading"><h1 tabindex="-1">알림</h1><p>관심 부동산의 모의 등기변동 알림</p></div>
     ${alerts.length ? `<div class="record-list">${alerts.map((alert) => {
       const target = targets.find((item) => item.id === alert.targetId);
+      if (!target) return '';
       return `<button type="button" class="record-row alert-row${alert.read ? '' : ' unread'}" data-action="open-alert" data-id="${alert.id}">
         <span class="record-title"><strong>${statusLabels[alert.kind][0]}</strong><span>${escape(targetLabel(target))} · ${formatTime(alert.at)}</span></span>
         ${badge(alert.read ? '읽음' : '읽지 않음', alert.read ? 'neutral' : 'info')}</button>`;
@@ -256,6 +259,7 @@ function renderProfilePage() {
       ${submissions.length ? `<div class="record-list">${submissions.map((item) => {
         const sample = samples.find((value) => value.id === item.sampleId);
         const target = targets.find((value) => value.id === item.targetId);
+        if (!sample || !target) return '';
         return `<div class="record-row"><span class="record-title"><strong>${escape(sample.name)}</strong>
           <span>${escape(targetLabel(target))} · ${formatTime(item.at)}</span></span>
           <div class="record-actions">${status(item.status)}${item.status === 'published' || item.status === 'duplicate' ? button('자료 보기', 'document', { id: item.sampleId, kind: 'quiet' }) : ''}</div></div>`;
@@ -303,7 +307,9 @@ function selectLocation(location, specifiedTarget) {
 
 function openTarget(id) {
   const target = targets.find((item) => item.id === id);
-  selectLocation(locations.find((location) => location.id === target.locationId), id);
+  const location = target && locations.find((item) => item.id === target.locationId);
+  if (!location) return;
+  selectLocation(location, id);
 }
 
 function showDialog(title, content) {
@@ -438,6 +444,7 @@ function openHistory(id) {
 
 function openShare() {
   const target = targets.find((item) => item.id === targetId);
+  if (!target) return;
   const suggested = samples.filter((sample) => sample.targetId === target.id);
   const allSamples = [...suggested, ...samples.filter((sample) => sample.targetId !== target.id)];
   showDialog('등기 자료 공유', `<p><strong>${escape(targetLabel(target))}</strong></p>
@@ -570,7 +577,11 @@ document.addEventListener('click', (event) => {
   const { action, id } = control.dataset;
   switch (action) {
     case 'page': changePage(id); break;
-    case 'location': selectLocation(results.find((location) => location.id === id)); break;
+    case 'location': {
+      const location = results.find((item) => item.id === id);
+      if (location) selectLocation(location);
+      break;
+    }
     case 'target':
       targetId = id;
       renderPanel();
