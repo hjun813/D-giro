@@ -7,7 +7,7 @@ export function initialState() {
   return {
     version: SNAPSHOT_VERSION,
     userId: 'user-a',
-    documents: ['unit-base', 'building-base'].map((sampleId) => {
+    documents: ['unit-base', 'unit-301-base', 'building-base', 'officetel-301-base', 'commercial-base', 'cheonggye-land-base'].map((sampleId) => {
       const sample = samples.find((item) => item.id === sampleId);
       return { sampleId, targetId: sample.targetId, registeredAt: '2026-11-15T02:00:00Z' };
     }),

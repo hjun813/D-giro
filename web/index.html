@@ -18,9 +18,11 @@
       </div>
       <nav aria-label="주요 메뉴" class="navigation">
         <button type="button" data-action="page" data-id="map" aria-current="page">지도 탐색</button>
-        <button type="button" data-action="page" data-id="watch">관심 부동산</button>
-        <button type="button" data-action="page" data-id="alerts">알림<span id="unread-count" hidden></span></button>
-        <button type="button" data-action="page" data-id="profile">내 정보</button>
+        <button type="button" data-action="page" data-id="guide">이용 가이드</button>
+        <button type="button" data-action="page" data-id="watch" data-auth-only hidden>관심 부동산</button>
+        <button type="button" data-action="page" data-id="alerts" data-auth-only hidden>알림<span id="unread-count" hidden></span></button>
+        <button type="button" class="nav-account" data-action="page" data-id="profile" data-auth-only hidden>내 정보</button>
+        <button type="button" id="nav-auth" class="nav-account" data-action="page" data-id="login" hidden>로그인</button>
       </nav>
     </header>
 
@@ -41,19 +43,22 @@
         </div>
         <div id="map-caption" class="map-caption">검증용 지도 · 실제 지형과 다를 수 있어요</div>
       </section>
-      <aside class="map-sidebar" aria-label="지도 검색과 등기 상세">
-        <div class="search-area">
-          <h1>지도에서 등기 찾기</h1>
+      <aside class="map-overlay" aria-label="지도 검색과 등기 상세">
+        <div class="floating-search">
+          <h1 class="sr-only">지도에서 등기 찾기</h1>
           <form id="search-form" class="search-form" role="search">
+            <span class="search-leading" aria-hidden="true"><span class="icon icon-search"></span></span>
             <label for="search-query" class="sr-only">주소·지번·건물명</label>
-            <input id="search-query" type="search" placeholder="주소·지번·건물명 검색" autocomplete="off">
-            <button type="submit" aria-label="검색"><span class="icon icon-search" aria-hidden="true"></span></button>
+            <input id="search-query" type="search" placeholder="주소, 지번, 건물명으로 등기 찾기" autocomplete="off">
+            <button type="button" id="search-clear" class="search-clear" data-action="clear-search" aria-label="검색어 지우기" hidden>×</button>
+            <button type="submit" class="search-submit" aria-label="검색">검색</button>
           </form>
           <p id="search-feedback" class="search-feedback" role="status" hidden></p>
+          <div id="popular-bar" class="popular-bar" aria-label="인기 주소"></div>
         </div>
-        <section id="results-panel" class="results-panel" aria-label="검색 결과 및 등기 상세"></section>
-        <div class="sidebar-foot">화면의 등기 자료와 변동 내역은 검증용 가상 자료입니다.</div>
+        <section id="results-panel" class="results-panel" aria-label="검색 결과 및 등기 상세" hidden></section>
       </aside>
+      <button type="button" id="drawer-toggle" class="drawer-toggle" data-action="drawer-toggle" aria-label="좌측 패널 열기" aria-expanded="false" aria-controls="results-panel"><span class="drawer-arrow" aria-hidden="true"></span></button>
     </main>
 
     <main id="sub-page" class="sub-page" hidden></main>

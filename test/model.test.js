@@ -12,6 +12,9 @@ test('주소, 지번, 건물명으로 같은 검증 위치를 검색한다', () 
   for (const term of ['서울시청', '세종대로 110', '태평로1가 31']) {
     assert.equal(demoSearch(term)[0].id, 'city-hall');
   }
+  for (const [term, id] of [['서울역', 'seoul-station'], ['명동길 74', 'myeongdong'], ['청계천로 1', 'cheonggye']]) {
+    assert.equal(demoSearch(term)[0].id, id);
+  }
   assert.deepEqual(demoSearch('없는검색결과'), []);
 });
 

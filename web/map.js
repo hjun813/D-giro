@@ -160,14 +160,17 @@ export async function connectKakaoMap(container, onSelect) {
   };
 }
 
-function makePin(location, selected, documentStatus) {
+function makePin(location, selected, pinMeta) {
+  const info = typeof pinMeta === 'object' && pinMeta !== null
+    ? pinMeta
+    : { label: pinMeta || '', hasDoc: String(pinMeta || '').endsWith('있음'), count: 0 };
   const pin = document.createElement('button');
   pin.type = 'button';
-  pin.className = `map-pin ${selected ? 'is-selected' : ''}`;
+  pin.className = `map-pin${selected ? ' is-selected' : ''}${info.hasDoc ? ' has-doc' : ''}`;
   pin.setAttribute('aria-pressed', selected);
-  pin.setAttribute('aria-label', `${location.name}${documentStatus ? `, ${documentStatus}` : ''}`);
-  pin.innerHTML = '<span class="icon icon-pin" aria-hidden="true"></span><span></span>';
-  pin.lastElementChild.textContent = location.name;
+  pin.setAttribute('aria-label', `${location.name}${info.label ? `, ${info.label}` : ''}`);
+  pin.innerHTML = `<span class="pin-dot${info.hasDoc ? ' is-live' : ''}" aria-hidden="true"></span><span class="pin-name"></span>${info.count ? `<span class="pin-count" aria-hidden="true">${info.count}</span>` : ''}`;
+  pin.querySelector('.pin-name').textContent = location.name;
   return pin;
 }
 
