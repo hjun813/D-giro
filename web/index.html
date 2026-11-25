@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="지도에서 등기 자료 조회와 변동 알림을 검증하는 등기로 MVP">
+    <title>등기로 — 지도에서 등기 찾기</title>
+    <link rel="icon" href="/logo.png" type="image/png">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css">
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-brand">
+        <a class="brand-link" href="/" aria-label="등기로 홈"><img src="/logo.png" width="108" height="47" alt="등기로"></a>
+        <span class="environment-label">MVP 검증</span>
+      </div>
+      <nav aria-label="주요 메뉴" class="navigation">
+        <button type="button" data-action="page" data-id="map" aria-current="page">지도 탐색</button>
+        <button type="button" data-action="page" data-id="watch">관심 부동산</button>
+        <button type="button" data-action="page" data-id="alerts">알림<span id="unread-count" hidden></span></button>
+        <button type="button" data-action="page" data-id="profile">내 정보</button>
+      </nav>
+    </header>
+
+    <main id="map-page" class="map-workspace">
+      <section class="map-stage" aria-label="위치 지도">
+        <div id="map-live" class="map-layer" hidden></div>
+        <div id="map-demo" class="map-layer">
+          <canvas aria-hidden="true"></canvas>
+          <div id="demo-pins" class="pin-layer"></div>
+        </div>
+        <p id="map-mode" class="map-mode" role="status">검증용 지도</p>
+        <div class="map-tools" aria-label="지도 조작">
+          <div class="zoom-group">
+            <button type="button" data-action="zoom-in" aria-label="지도 확대">+</button>
+            <button type="button" data-action="zoom-out" aria-label="지도 축소">−</button>
+          </div>
+          <button type="button" data-action="map-reset" aria-label="기본 지도 위치로 이동"><span class="icon icon-locate" aria-hidden="true"></span></button>
+        </div>
+        <div id="map-caption" class="map-caption">검증용 지도 · 실제 지형과 다를 수 있어요</div>
+      </section>
+      <aside class="map-sidebar" aria-label="지도 검색과 등기 상세">
+        <div class="search-area">
+          <h1>지도에서 등기 찾기</h1>
+          <form id="search-form" class="search-form" role="search">
+            <label for="search-query" class="sr-only">주소·지번·건물명</label>
+            <input id="search-query" type="search" placeholder="주소·지번·건물명 검색" autocomplete="off">
+            <button type="submit" aria-label="검색"><span class="icon icon-search" aria-hidden="true"></span></button>
+          </form>
+          <p id="search-feedback" class="search-feedback" role="status" hidden></p>
+        </div>
+        <section id="results-panel" class="results-panel" aria-label="검색 결과 및 등기 상세"></section>
+        <div class="sidebar-foot">화면의 등기 자료와 변동 내역은 검증용 가상 자료입니다.</div>
+      </aside>
+    </main>
+
+    <main id="sub-page" class="sub-page" hidden></main>
+    <dialog id="action-dialog" aria-labelledby="dialog-title"></dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <noscript><p class="noscript">등기로를 이용하려면 브라우저에서 JavaScript를 켜 주세요.</p></noscript>
+  </body>
+</html>
