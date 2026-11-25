@@ -19,6 +19,12 @@ const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
 })[char]);
 
 let state = loadState(storage);
+const accountExamples = initialState();
+let account = null;
+let accountWatches = [];
+let accountLoading = true;
+let accountPending = false;
+let accountRevision = 0;
 let page = 'map';
 let selection = null;
 let targetId = null;
@@ -72,10 +78,61 @@ function button(label, action, { id = '', kind = 'secondary', disabled = false }
   return `<button type="button" class="button ${kind}" data-action="${action}" data-id="${escape(id)}"${disabled ? ' disabled' : ''}>${escape(label)}</button>`;
 }
 
+function registryState() {
+  return account ? accountExamples : state;
+}
+
+function activeWatches() {
+  return account ? accountWatches : state.watches[state.userId];
+}
+
+async function accountRequest(path, method = 'GET', data) {
+  const response = await fetch(`/api/${path}`, {
+    method,
+    ...(data ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) } : {}),
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    const error = new Error(result.message);
+    error.status = response.status;
+    throw error;
+  }
+  return result;
+}
+
+function updateAccount(result) {
+  account = result.user;
+  accountWatches = result.watchlist;
+  accountRevision += 1;
+}
+
+async function refreshAccount() {
+  if (accountPending) return;
+  const revision = accountRevision;
+  try {
+    const result = await accountRequest('session');
+    if (accountPending || revision !== accountRevision) return;
+    const changed = result.user?.id !== account?.id || result.watchlist.join(',') !== accountWatches.join(',');
+    updateAccount(result);
+    if (changed && !accountLoading) {
+      render();
+      refreshPins();
+    }
+  } catch {
+    // Preserve the current view when the local server is temporarily unreachable.
+  } finally {
+    if (accountLoading) {
+      accountLoading = false;
+      render();
+      refreshPins();
+    }
+  }
+}
+
 function documentStatus(locationId) {
   const matching = targets.filter((target) => target.locationId === locationId);
   if (!matching.length) return '';
-  return state.documents.some((document) => matching.some((target) => target.id === document.targetId)) ? '공유 자료 있음' : '공유 자료 없음';
+  return registryState().documents.some((document) => matching.some((target) => target.id === document.targetId)) ? '공유 자료 있음' : '공유 자료 없음';
 }
 
 function refreshPins() {
@@ -101,21 +158,23 @@ function renderSearchResults() {
 }
 
 function renderTargetDetail(target) {
-  const documents = documentsFor(state, target.id);
+  const data = registryState();
+  const documents = documentsFor(data, target.id);
   const latest = documents[0];
-  const check = state.checks[target.id];
-  const events = eventsFor(state, target.id);
+  const check = data.checks[target.id];
+  const events = eventsFor(data, target.id);
   const event = events.at(-1);
-  const watched = state.watches[state.userId].includes(target.id);
-  return `<section class="detail-section"><div class="section-title"><h3>공유 등기 자료</h3>${needsUpdate(state, target.id) ? badge('문서 갱신 필요', 'warning') : ''}</div>
+  const watched = activeWatches().includes(target.id);
+  const share = account ? '' : button('등기 자료 공유', 'share', { kind: latest ? 'secondary' : 'primary' });
+  return `<section class="detail-section"><div class="section-title"><h3>공유 등기 자료</h3>${needsUpdate(data, target.id) ? badge('문서 갱신 필요', 'warning') : ''}</div>
     ${latest ? `<dl class="detail-list"><div><dt>발급 시각</dt><dd>${formatTime(latest.issuedAt)}</dd></div><div><dt>서비스 등록</dt><dd>${formatTime(latest.registeredAt)}</dd></div></dl>
-      <div class="button-row">${button('공유 등기 보기', 'document', { id: latest.sampleId, kind: 'primary' })}${button('등기 자료 공유', 'share')}</div>` :
-      `<p class="muted">공유된 검증용 자료가 없어요.</p>${button('등기 자료 공유', 'share', { kind: 'primary' })}`}
+      <div class="button-row">${button('공유 등기 보기', 'document', { id: latest.sampleId, kind: 'primary' })}${share}</div>` :
+      `<p class="muted">공유된 검증용 자료가 없어요.</p>${share}`}
   </section>
   <section class="detail-section"><div class="section-title"><h3>변동 확인</h3>${status(check?.outcome)}</div>
     <dl class="detail-list"><div><dt>마지막 확인 성공</dt><dd>${formatTime(check?.lastSuccessAt)}</dd></div>
       ${event ? `<div><dt>확인된 신청 상태</dt><dd>${statusLabels[event.kind][0]}</dd></div>` : ''}</dl>
-    <div class="button-row">${button(watched ? '관심 해제' : '관심 등록', 'watch', { id: target.id })}
+    <div class="button-row">${button(watched ? '관심 해제' : '관심 등록', 'watch', { id: target.id, disabled: accountLoading || accountPending })}
       ${button('이력 보기', 'history', { id: target.id, kind: 'quiet' })}</div>
   </section>`;
 }
@@ -145,15 +204,19 @@ function renderPanel() {
 }
 
 function renderWatchPage() {
-  const watched = state.watches[state.userId].map((id) => targets.find((target) => target.id === id));
-  return `<div class="page-heading"><h1 tabindex="-1">관심 부동산</h1><p>${escape(users.find((user) => user.id === state.userId).name)}의 관심 목록</p></div>
+  if (accountLoading) return '<div class="page-heading"><h1 tabindex="-1">관심 부동산</h1><p role="status">관심 목록을 확인하고 있어요.</p></div>';
+  const watched = activeWatches().map((id) => targets.find((target) => target.id === id)).filter(Boolean);
+  const name = account?.email || users.find((user) => user.id === state.userId).name;
+  const data = registryState();
+  return `<div class="page-heading"><h1 tabindex="-1">관심 부동산</h1><p>${escape(name)}의 관심 목록</p></div>
     ${watched.length ? `<div class="record-list">${watched.map((target) => `<div class="record-row">
-      <button type="button" class="record-title" data-action="open-target" data-id="${target.id}"><strong>${escape(targetLabel(target))}</strong><span>마지막 확인 성공 ${formatTime(state.checks[target.id]?.lastSuccessAt)}</span></button>
-      <div class="record-actions">${status(state.checks[target.id]?.outcome)}${button('관심 해제', 'watch', { id: target.id, kind: 'quiet' })}</div>
+      <button type="button" class="record-title" data-action="open-target" data-id="${target.id}"><strong>${escape(targetLabel(target))}</strong><span>${account ? '검증용 등기 대상' : `마지막 확인 성공 ${formatTime(data.checks[target.id]?.lastSuccessAt)}`}</span></button>
+      <div class="record-actions">${account ? '' : status(data.checks[target.id]?.outcome)}${button('관심 해제', 'watch', { id: target.id, kind: 'quiet', disabled: accountPending })}</div>
     </div>`).join('')}</div>` : `<section class="empty-state"><h2>관심 등록한 부동산이 없어요</h2><p>지도에서 가상 등기 대상을 선택하고 관심 등록해 보세요.</p>${button('지도에서 찾기', 'page', { id: 'map', kind: 'primary' })}</section>`}`;
 }
 
 function renderAlertsPage() {
+  if (account || accountLoading) return `<div class="page-heading"><h1 tabindex="-1">알림</h1></div><section class="empty-state"><h2>받은 알림이 없어요</h2><p>${accountLoading ? '계정을 확인하고 있어요.' : '실제 등기변동이 연동되면 여기에서 알림을 확인할 수 있어요.'}</p></section>`;
   const alerts = state.notifications.filter((notification) => notification.userId === state.userId);
   return `<div class="page-heading"><h1 tabindex="-1">알림</h1><p>관심 부동산의 모의 등기변동 알림</p></div>
     ${alerts.length ? `<div class="record-list">${alerts.map((alert) => {
@@ -165,14 +228,24 @@ function renderAlertsPage() {
 }
 
 function renderProfilePage() {
+  const mapConnection = `<section class="page-section"><div class="section-title"><h2>지도 연결</h2>${badge(mapStatuses[mapStatus][0], mapStatus === 'live' ? 'success' : mapStatus === 'failed' ? 'warning' : 'neutral')}</div>
+    <p class="muted">${escape(mapStatuses[mapStatus][1])}</p></section>`;
+  const heading = '<div class="page-heading"><h1 tabindex="-1">내 정보</h1></div>';
+  if (accountLoading) return `${heading}<p role="status">로그인 상태를 확인하고 있어요.</p>${mapConnection}`;
+  if (account) return `${heading}<section class="page-section"><h2>회원 계정</h2>
+    <p><strong>${escape(account.email)}</strong></p><p class="muted">검증용 등기 대상의 관심 목록을 계정에 저장해요.</p>
+    <div class="button-row">${button('관심 목록 보기', 'page', { id: 'watch' })}${button('로그아웃', 'logout', { kind: 'quiet', disabled: accountPending })}</div>
+    </section>${mapConnection}`;
+
   const submissions = state.submissions.filter((submission) => submission.userId === state.userId);
   const next = rounds[state.round];
   const canRun = Boolean(next && Object.values(state.watches).some((watched) => watched.length));
-  return `<div class="page-heading"><h1 tabindex="-1">내 정보</h1><p>테스트 사용자를 전환하고 검증 시나리오를 실행할 수 있어요.</p></div>
+  return `${heading}<section class="page-section"><h2>회원 계정</h2>
+    <p class="muted">로그인하면 다른 브라우저에서도 내 관심 목록을 확인할 수 있어요.</p>
+    <div class="button-row">${button('로그인', 'auth', { id: 'login', kind: 'primary' })}${button('회원가입', 'auth', { id: 'register' })}</div></section>
     <section class="page-section"><h2>테스트 사용자</h2><div class="button-row user-switch">${users.map((user) =>
       `<button type="button" class="button ${user.id === state.userId ? 'primary' : 'secondary'}" data-action="user" data-id="${user.id}" aria-pressed="${user.id === state.userId}">${escape(user.name)}</button>`).join('')}</div></section>
-    <section class="page-section"><div class="section-title"><h2>지도 연결</h2>${badge(mapStatuses[mapStatus][0], mapStatus === 'live' ? 'success' : mapStatus === 'failed' ? 'warning' : 'neutral')}</div>
-      <p class="muted">${escape(mapStatuses[mapStatus][1])}</p></section>
+    ${mapConnection}
     <section class="page-section"><h2>모의 변동 확인</h2>
       <p class="muted">${next ? `다음 회차 ${escape(next.label)}` : '준비된 조회 회차를 모두 실행했어요.'}</p>
       ${!canRun && next ? '<p class="muted">실행하려면 지도에서 하나 이상의 대상을 관심 등록하세요.</p>' : ''}
@@ -197,7 +270,7 @@ function render() {
     if (tab.dataset.id === page) tab.setAttribute('aria-current', 'page');
     else tab.removeAttribute('aria-current');
   }
-  const unread = state.notifications.filter((item) => item.userId === state.userId && !item.read).length;
+  const unread = account || accountLoading ? 0 : state.notifications.filter((item) => item.userId === state.userId && !item.read).length;
   const count = document.querySelector('#unread-count');
   count.textContent = unread;
   count.hidden = unread === 0;
@@ -240,11 +313,102 @@ function showDialog(title, content) {
   dialog.querySelector('#dialog-title').focus({ preventScroll: true });
 }
 
+function openAuth(mode) {
+  const registration = mode === 'register';
+  const label = registration ? '회원가입' : '로그인';
+  showDialog(label, `<form id="auth-form" class="auth-form" data-mode="${mode}">
+    <label for="auth-email">이메일</label>
+    <input id="auth-email" type="email" name="email" maxlength="254" autocomplete="username" required>
+    <label for="auth-password">비밀번호</label>
+    <input id="auth-password" type="password" name="password" minlength="12" maxlength="128" autocomplete="${registration ? 'new-password' : 'current-password'}" required>
+    ${registration ? '<p class="muted">비밀번호는 12자 이상 입력해 주세요.</p>' : ''}
+    <p class="upload-feedback" role="status" hidden></p>
+    <button type="submit" class="button primary">${label}</button>
+  </form>`);
+}
+
+async function submitAuth(form) {
+  const submit = form.querySelector('button[type="submit"]');
+  if (accountPending) return;
+  const feedback = form.querySelector('.upload-feedback');
+  const mode = form.dataset.mode;
+  const data = Object.fromEntries(new FormData(form));
+  accountPending = true;
+  submit.disabled = true;
+  feedback.hidden = true;
+  try {
+    updateAccount(await accountRequest(`auth/${mode}`, 'POST', data));
+    accountPending = false;
+    if (dialog.open) dialog.close();
+    render();
+    refreshPins();
+    subPage.querySelector('h1')?.focus({ preventScroll: true });
+    notify(mode === 'register' ? '회원가입을 완료했어요.' : '로그인했어요.');
+  } catch (error) {
+    feedback.textContent = error.status ? error.message : '서버에 연결하지 못했어요. 잠시 뒤 다시 시도해 주세요.';
+    feedback.hidden = false;
+  } finally {
+    accountPending = false;
+    submit.disabled = false;
+  }
+}
+
+async function logout(control) {
+  if (accountPending) return;
+  accountPending = true;
+  control.disabled = true;
+  try {
+    updateAccount(await accountRequest('auth/logout', 'POST'));
+    accountPending = false;
+    render();
+    refreshPins();
+    subPage.querySelector('h1')?.focus({ preventScroll: true });
+    notify('로그아웃했어요.');
+  } catch {
+    notify('로그아웃하지 못했어요. 다시 시도해 주세요.');
+  } finally {
+    accountPending = false;
+    control.disabled = false;
+  }
+}
+
+async function changeWatch(id, control) {
+  if (accountLoading || accountPending) return;
+  const watching = !activeWatches().includes(id);
+  if (account) {
+    accountPending = true;
+    control.disabled = true;
+    try {
+      updateAccount(await accountRequest('watchlist', 'PUT', { accountId: account.id, targetId: id, watched: watching }));
+    } catch (error) {
+      accountPending = false;
+      if (error.status === 401) {
+        updateAccount({ user: null, watchlist: [] });
+        render();
+        refreshPins();
+      }
+      if (error.status === 409) await refreshAccount();
+      notify(error.status ? error.message : '관심 목록을 저장하지 못했어요. 다시 시도해 주세요.');
+      return;
+    } finally {
+      accountPending = false;
+      control.disabled = false;
+    }
+  } else {
+    toggleWatch(state, state.userId, id);
+    saveState(storage, state);
+  }
+  render();
+  if (page === 'map') panel.querySelector('[data-action="watch"]')?.focus({ preventScroll: true });
+  else subPage.querySelector('h1')?.focus({ preventScroll: true });
+  notify(watching ? '관심 부동산으로 등록했어요.' : '관심 등록을 해제했어요.');
+}
+
 function openDocument(id) {
   const sample = samples.find((item) => item.id === id);
   const target = targets.find((item) => item.id === sample?.targetId);
   if (!target) return;
-  const active = documentsFor(state, target.id).find((item) => item.sampleId === id);
+  const active = documentsFor(registryState(), target.id).find((item) => item.sampleId === id);
   if (!active) return;
   showDialog('공유 등기 자료', `<p>${escape(targetLabel(target))} ${badge('검증용 가상 자료', 'info')}</p>
     <dl class="detail-list"><div><dt>발급 시각</dt><dd>${formatTime(active.issuedAt)}</dd></div><div><dt>서비스 등록</dt><dd>${formatTime(active.registeredAt)}</dd></div></dl>
@@ -257,7 +421,7 @@ function openDocument(id) {
 function openHistory(id) {
   const target = targets.find((item) => item.id === id);
   if (!target) return;
-  const data = state;
+  const data = registryState();
   const documents = documentsFor(data, id);
   const events = [...eventsFor(data, id)].reverse();
   showDialog('등기 이력', `<p>${escape(targetLabel(target))} ${badge('검증용 가상 자료', 'info')}</p>
@@ -356,6 +520,11 @@ function changePage(value) {
 }
 
 document.addEventListener('submit', async (event) => {
+  if (event.target.id === 'auth-form') {
+    event.preventDefault();
+    await submitAuth(event.target);
+    return;
+  }
   if (event.target.id === 'sample-form') {
     event.preventDefault();
     await uploadSample(event.target);
@@ -433,15 +602,9 @@ document.addEventListener('click', (event) => {
     case 'document': openDocument(id); break;
     case 'history': openHistory(id); break;
     case 'share': openShare(); break;
-    case 'watch': {
-      const watching = toggleWatch(state, state.userId, id);
-      saveState(storage, state);
-      render();
-      if (page === 'map') panel.querySelector('[data-action="watch"]')?.focus({ preventScroll: true });
-      else subPage.querySelector('h1')?.focus({ preventScroll: true });
-      notify(watching ? '관심 부동산으로 등록했어요.' : '관심 등록을 해제했어요.');
-      break;
-    }
+    case 'auth': openAuth(id); break;
+    case 'logout': void logout(control); break;
+    case 'watch': void changeWatch(id, control); break;
     case 'user':
       state.userId = id;
       saveState(storage, state);
@@ -480,6 +643,8 @@ document.addEventListener('click', (event) => {
 
 render();
 refreshPins();
+void refreshAccount();
+window.addEventListener('focus', refreshAccount);
 const liveContainer = document.querySelector('#map-live');
 connectKakaoMap(liveContainer, selectLocation).then((liveMap) => {
   mapStatus = liveMap ? 'live' : 'unconfigured';

@@ -1,9 +1,16 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { createAccountApi, openAccounts } from './accounts.js';
 import { sampleFilename, samples } from './web/fixtures.js';
 
 const port = Number(process.env.PORT || 4173);
+const dataDirectory = new URL('./.data/', import.meta.url);
+mkdirSync(dataDirectory, { recursive: true });
+const accounts = openAccounts(fileURLToPath(new URL('accounts.sqlite', dataDirectory)));
+const accountApi = createAccountApi(accounts, { origin: process.env.APP_ORIGIN });
 const files = new Map([
   ['/', ['web/index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['web/app.js', 'text/javascript; charset=utf-8']],
@@ -33,6 +40,17 @@ const server = createServer(async (request, response) => {
   const path = request.url.split('?')[0];
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('Cache-Control', 'no-store');
+
+  if (path.startsWith('/api/')) {
+    try {
+      await accountApi(request, response, path);
+    } catch (error) {
+      console.error('Account request failed', error.code || error.name);
+      if (!response.headersSent) response.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify({ message: '서버 요청을 처리하지 못했어요. 다시 시도해 주세요.' }));
+    }
+    return;
+  }
 
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     response.writeHead(405, { Allow: 'GET, HEAD' }).end();
