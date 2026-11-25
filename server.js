@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createAccountApi, openAccounts } from './accounts.js';
+import { createBuildingLedgerApi, createMolitLedgerProvider } from './building-ledger.js';
 import { sampleFilename, samples } from './web/fixtures.js';
 
 const port = Number(process.env.PORT || 4173);
@@ -11,6 +12,9 @@ const dataDirectory = new URL('./.data/', import.meta.url);
 mkdirSync(dataDirectory, { recursive: true });
 const accounts = openAccounts(fileURLToPath(new URL('accounts.sqlite', dataDirectory)));
 const accountApi = createAccountApi(accounts, { origin: process.env.APP_ORIGIN });
+const ledgerApi = createBuildingLedgerApi(createMolitLedgerProvider({
+  serviceKey: process.env.DATA_GO_KR_SERVICE_KEY,
+}));
 const files = new Map([
   ['/', ['web/index.html', 'text/html; charset=utf-8']],
   ['/login', ['web/index.html', 'text/html; charset=utf-8']],
@@ -47,6 +51,17 @@ const server = createServer(async (request, response) => {
   const path = request.url.split('?')[0];
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('Cache-Control', 'no-store');
+
+  if (path.startsWith('/api/building-ledger')) {
+    try {
+      await ledgerApi(request, response, path);
+    } catch (error) {
+      console.error('Building ledger request failed', error.code || error.name);
+      if (!response.headersSent) response.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify({ message: '건축물대장 요청을 처리하지 못했어요.' }));
+    }
+    return;
+  }
 
   if (path.startsWith('/api/')) {
     try {

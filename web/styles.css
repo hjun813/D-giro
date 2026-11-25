@@ -245,6 +245,8 @@ h3 { font-size: 1rem; }
 .doc-preview-row strong { color: var(--ink); font-variant-numeric: tabular-nums; }
 .doc-preview-row strong.is-clean { color: var(--success-ink); }
 .doc-preview-row strong.is-debt { color: var(--action); }
+.ledger-unit-list { max-height: 196px; overflow: auto; padding-right: 2px; }
+.ledger-status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 14px 0 6px; padding-top: 12px; border-top: 1px solid var(--divider); font-size: .875rem; font-weight: 650; }
 .detail-list { display: grid; gap: 6px; margin: 0; font-size: .84rem; }
 .detail-list > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 8px; }
 .detail-list dt { color: var(--muted); }

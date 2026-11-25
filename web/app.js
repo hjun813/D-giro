@@ -52,7 +52,7 @@ function pageFromPath(pathname = window.location.pathname) {
 
 let page = pageFromPath();
 let authRedirect = null;
-let panelOpen = false;
+let panelOpen = true;
 let listFilter = 'all';
 let alertFilter = 'all';
 let areaUnit = 'sqm';
@@ -71,6 +71,9 @@ let toastTimer;
 let dialogTrigger;
 let map = createDemoMap(document.querySelector('#map-demo'), selectLocation);
 let mapStatus = 'connecting';
+let ledgerConfigured = false;
+let ledgerState = null;
+let ledgerSequence = 0;
 
 const statusLabels = {
   published: ['공유 완료', 'success'], duplicate: ['이미 공유된 자료', 'info'], mismatch: ['등기 대상 불일치', 'warning'],
@@ -320,14 +323,128 @@ function renderTargetDetail(target) {
   </div>`;
 }
 
+function formatNumberArea(sqm, prefix = '') {
+  if (!Number.isFinite(sqm)) return '';
+  return formatArea(`${prefix ? `${prefix} ` : ''}${sqm.toFixed(2)}㎡`);
+}
+
+async function loadBuildingLedger(location) {
+  const sequence = ++ledgerSequence;
+  ledgerState = { locationId: location.id, status: 'loading', data: null, selectedUnitId: null, message: '' };
+  renderPanel();
+  try {
+    const parcel = await map.resolveParcel?.(location);
+    if (sequence !== ledgerSequence || selection?.id !== location.id) return;
+    if (!parcel) {
+      ledgerState = { locationId: location.id, status: 'no-parcel', data: null, selectedUnitId: null, message: '이 위치의 법정동·지번 정보를 확인하지 못했어요.' };
+      renderPanel();
+      return;
+    }
+    const query = new URLSearchParams(parcel);
+    const response = await fetch(`/api/building-ledger?${query.toString()}`);
+    const payload = await response.json();
+    if (sequence !== ledgerSequence || selection?.id !== location.id) return;
+    if (response.status === 503 || payload.status === 'unconfigured') {
+      ledgerState = { locationId: location.id, status: 'unconfigured', data: null, selectedUnitId: null, message: payload.message || '' };
+    } else if (!response.ok) {
+      ledgerState = { locationId: location.id, status: 'error', data: null, selectedUnitId: null, message: payload.message || '건축물대장 조회에 실패했어요.' };
+    } else {
+      ledgerState = {
+        locationId: location.id,
+        status: payload.status,
+        data: payload,
+        selectedUnitId: payload.units?.[0]?.id || null,
+        message: '',
+      };
+    }
+  } catch {
+    if (sequence !== ledgerSequence || selection?.id !== location.id) return;
+    ledgerState = { locationId: location.id, status: 'error', data: null, selectedUnitId: null, message: '건축물대장 서버에 연결하지 못했어요.' };
+  }
+  renderPanel();
+}
+
+function renderBuildingLedgerSection() {
+  if (!ledgerState || ledgerState.locationId !== selection?.id) {
+    return '<p class="notice">이 위치의 검증용 데이터가 없어요.</p>';
+  }
+  if (ledgerState.status === 'loading') {
+    return '<div class="detail-cards"><section class="info-card"><div class="section-title"><h3>공공 건축물대장 조회</h3><span class="badge badge-info">조회 중</span></div><p class="muted" role="status">국토교통부 건축물대장에서 건물·동·호수 정보를 불러오고 있어요.</p></section></div>';
+  }
+  if (ledgerState.status === 'unconfigured') {
+    return `<div class="detail-cards"><section class="info-card">
+      <div class="section-title"><h3>공공 건축물대장 미연결</h3>${badge('인증키 필요', 'warning')}</div>
+      <p class="muted">이 위치의 검증용 데이터가 없어요. <code>.env.local</code>에 공공데이터포털 <code>DATA_GO_KR_SERVICE_KEY</code>를 설정하면 전국 실제 건물·동·호수 정보를 바로 조회할 수 있어요.</p>
+    </section></div>`;
+  }
+  if (ledgerState.status === 'error') {
+    return `<div class="detail-cards"><section class="info-card">
+      <div class="section-title"><h3>건축물대장 조회 실패</h3>${badge('오류', 'danger')}</div>
+      <p class="muted">${escape(ledgerState.message || '건축물대장 정보를 불러오지 못했어요.')}</p>
+      <div class="button-row">${button('다시 조회', 'retry-ledger', { kind: 'secondary' })}</div>
+    </section></div>`;
+  }
+  if (ledgerState.status === 'empty' || ledgerState.status === 'no-parcel') {
+    return `<div class="detail-cards"><section class="info-card">
+      <div class="section-title"><h3>건축물대장 정보 없음</h3>${badge('공공 데이터', 'neutral')}</div>
+      <p class="muted">${escape(ledgerState.message || '이 지번에 등록된 건축물대장 표제부가 없어요. 공원·도로·나대지 등 건축물이 없는 필지일 수 있어요.')}</p>
+    </section></div>`;
+  }
+
+  const { titles = [], units = [], parcel } = ledgerState.data;
+  const primary = titles[0];
+  const selectedUnit = units.find((item) => item.id === ledgerState.selectedUnitId) || units[0];
+  const floorLabel = primary
+    ? [primary.groundFloors ? `지상 ${primary.groundFloors}층` : '', primary.undergroundFloors ? `지하 ${primary.undergroundFloors}층` : ''].filter(Boolean).join(' · ')
+    : '';
+  return `<div class="detail-cards">
+    <section class="info-card">
+      <div class="section-title">
+        <h3>건축물대장 표제부</h3>
+        <div class="detail-topline-right">${badge('공공 실데이터', 'success')}<button type="button" class="unit-toggle" data-action="toggle-unit">${areaUnit === 'sqm' ? '평' : '㎡'}</button></div>
+      </div>
+      ${primary ? `<div class="doc-preview">
+        ${primary.buildingName ? `<div class="doc-preview-row"><span>건물명</span><strong>${escape(primary.buildingName)}</strong></div>` : ''}
+        ${primary.mainPurpose ? `<div class="doc-preview-row"><span>주용도</span><strong>${escape(primary.mainPurpose)}</strong></div>` : ''}
+        ${primary.structure ? `<div class="doc-preview-row"><span>구조</span><strong>${escape(primary.structure)}</strong></div>` : ''}
+        ${primary.totalArea ? `<div class="doc-preview-row"><span>연면적</span><strong>${escape(formatNumberArea(primary.totalArea))}</strong></div>` : ''}
+        ${floorLabel ? `<div class="doc-preview-row"><span>규모</span><strong>${escape(floorLabel)}</strong></div>` : ''}
+        ${primary.approvalDate ? `<div class="doc-preview-row"><span>사용승인일</span><strong>${escape(primary.approvalDate)}</strong></div>` : ''}
+      </div>` : ''}
+      ${parcel?.pnu ? `<p class="target-id">필지 고유번호(PNU) <code>${escape(parcel.pnu)}</code></p>` : ''}
+    </section>
+    ${units.length ? `<section class="info-card">
+      <div class="section-title"><h3>집합건물 전유부 (동·호수)</h3>${badge(`${units.length}호`, 'info')}</div>
+      <div class="target-list ledger-unit-list">${units.slice(0, 60).map((unit) => {
+        const label = [unit.dong, unit.ho].filter(Boolean).join(' ');
+        const isSelected = unit.id === selectedUnit?.id;
+        return `<button type="button" class="target-choice${isSelected ? ' selected' : ''}" data-action="ledger-unit" data-id="${escape(unit.id)}" aria-pressed="${isSelected}">
+          <span>${escape(label)}</span>
+          ${unit.exclusiveArea ? `<span class="target-type-tag">${escape(formatNumberArea(unit.exclusiveArea))}</span>` : ''}
+        </button>`;
+      }).join('')}</div>
+      ${selectedUnit ? `<div class="doc-preview">
+        <div class="doc-preview-row"><span>선택 호수</span><strong>${escape([selectedUnit.dong, selectedUnit.ho].filter(Boolean).join(' '))}</strong></div>
+        ${selectedUnit.exclusiveArea ? `<div class="doc-preview-row"><span>전용면적</span><strong>${escape(formatNumberArea(selectedUnit.exclusiveArea))}</strong></div>` : ''}
+        ${selectedUnit.purpose ? `<div class="doc-preview-row"><span>용도</span><strong>${escape(selectedUnit.purpose)}</strong></div>` : ''}
+      </div>` : ''}
+    </section>` : ''}
+    <section class="info-card">
+      <div class="section-title"><h3>등기부등본 · 변동 알림</h3>${badge('2단계 연동 예정', 'neutral')}</div>
+      <p class="muted">이 정보는 국토교통부 공공 건축물대장 실데이터입니다. 부동산 고유번호 기반 등기부등본(갑구·을구)과 변동 알림은 등기 API 연동 후 제공됩니다.</p>
+    </section>
+  </div>`;
+}
+
 function renderLocation() {
   const options = targets.filter((target) => target.locationId === selection.id);
   const target = options.find((item) => item.id === targetId);
   const watches = activeWatches();
+  const sourceBadge = options.length ? badge('검증용 가상 자료', 'info') : badge(ledgerState?.status === 'ok' ? '공공 건축물대장' : '실제 검색 위치', ledgerState?.status === 'ok' ? 'success' : 'neutral');
   return `<div class="detail-header">
       <div class="detail-topline">
         <button type="button" class="text-button" data-action="close-detail">← 목록으로</button>
-        <div class="detail-topline-right">${badge('검증용 가상 자료', 'info')}<button type="button" class="icon-button panel-close" data-action="panel-close" aria-label="상세 닫기">×</button></div>
+        <div class="detail-topline-right">${sourceBadge}<button type="button" class="icon-button panel-close" data-action="panel-close" aria-label="상세 닫기">×</button></div>
       </div>
       <h2 id="location-heading" tabindex="-1">${escape(selection.name)}</h2>
       <div class="address-row">
@@ -346,7 +463,7 @@ function renderLocation() {
         </button>`;
       }).join('')}</div>
       ${target ? `<p class="target-id">검증 식별번호 <code>${escape(target.id)}</code></p>` : ''}
-    </section>${target ? renderTargetDetail(target) : ''}` : '<p class="notice">이 위치의 검증용 데이터가 없어요.</p>'}`;
+    </section>${target ? renderTargetDetail(target) : ''}` : renderBuildingLedgerSection()}`;
 }
 
 function renderPanel() {
@@ -455,8 +572,13 @@ function renderProfilePage() {
     </div>
     <div class="profile-grid">
       <section class="page-section">
-        <div class="section-title"><h2>지도 연결</h2>${badge(mapStatuses[mapStatus][0], mapStatus === 'live' ? 'success' : mapStatus === 'failed' ? 'warning' : 'neutral')}</div>
+        <div class="section-title"><h2>외부 데이터 연결</h2>${badge(mapStatuses[mapStatus][0], mapStatus === 'live' ? 'success' : mapStatus === 'failed' ? 'warning' : 'neutral')}</div>
         <p class="muted">${escape(mapStatuses[mapStatus][1])}</p>
+        <div class="ledger-status-row">
+          <span>공공 건축물대장 API</span>
+          ${badge(ledgerConfigured ? '연결됨' : '인증키 미설정', ledgerConfigured ? 'success' : 'neutral')}
+        </div>
+        <p class="muted">${ledgerConfigured ? '카카오맵에서 검색한 전국 실제 주소의 건물 표제부와 동·호수를 조회합니다.' : '.env.local에 DATA_GO_KR_SERVICE_KEY를 추가하면 실제 건축물대장을 조회할 수 있어요.'}</p>
       </section>
       <section class="page-section">
         <div class="section-title"><h2>모의 변동 확인</h2>${badge(`${state.round} / ${rounds.length} 회차`, 'info')}</div>
@@ -740,7 +862,10 @@ function selectLocation(location, specifiedTarget) {
   panelOpen = true;
   selection = location;
   targetId = specifiedTarget || targets.find((target) => target.locationId === location.id)?.id || null;
-  if (targetId) recordRecent(targetId);
+  if (targetId) {
+    recordRecent(targetId);
+    ledgerState = null;
+  }
   sheet = 'open';
   page = 'map';
   render();
@@ -748,6 +873,7 @@ function selectLocation(location, specifiedTarget) {
   refreshPins();
   map.select(location);
   document.querySelector('#location-heading')?.focus({ preventScroll: true });
+  if (!targetId) void loadBuildingLedger(location);
 }
 
 function openTarget(id) {
@@ -1292,6 +1418,15 @@ document.addEventListener('click', (event) => {
       if (page === 'map') renderPanel();
       if (dialog.open && openDocId) openDocument(openDocId);
       break;
+    case 'ledger-unit':
+      if (ledgerState) {
+        ledgerState.selectedUnitId = id;
+        renderPanel();
+      }
+      break;
+    case 'retry-ledger':
+      if (selection) void loadBuildingLedger(selection);
+      break;
     case 'dialog-close': dialog.close(); break;
     case 'document': openDocument(id); break;
     case 'history': openHistory(id); break;
@@ -1350,6 +1485,11 @@ document.addEventListener('click', (event) => {
 render();
 refreshPins();
 void refreshAccount();
+fetch('/api/building-ledger/status').then((res) => (res.ok ? res.json() : null)).then((info) => {
+  if (!info) return;
+  ledgerConfigured = Boolean(info.configured);
+  if (page === 'profile') render();
+}).catch(() => {});
 window.addEventListener('focus', refreshAccount);
 const liveContainer = document.querySelector('#map-live');
 connectKakaoMap(liveContainer, selectLocation).then((liveMap) => {

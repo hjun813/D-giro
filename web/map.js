@@ -22,12 +22,24 @@ function matchDemoLocation(result) {
 
 export function normalizeKakaoResult(result) {
   const addresses = [result.road_address_name, result.address_name].filter(Boolean);
+  const bCode = String(result.address?.b_code || '').trim();
+  const mainNo = String(result.address?.main_address_no || '').trim();
+  const parcel = /^\d{10}$/.test(bCode) && /^\d{1,4}$/.test(mainNo)
+    ? {
+        sigunguCd: bCode.slice(0, 5),
+        bjdongCd: bCode.slice(5, 10),
+        platGbCd: result.address.mountain_yn === 'Y' ? '1' : '0',
+        bun: mainNo,
+        ji: String(result.address.sub_address_no || '0').trim() || '0',
+      }
+    : null;
   const item = {
     id: `search:${result.id || `${result.y},${result.x}`}`,
     name: result.place_name || result.road_address?.address_name || result.address_name,
     area: addresses[0] || '',
     coordinates: [Number(result.y), Number(result.x)],
     addresses,
+    ...(parcel ? { parcel } : {}),
   };
   const fixture = matchDemoLocation(item);
   return fixture ? { ...item, id: fixture.id, name: fixture.name, subtitle: fixture.subtitle } : item;
@@ -163,6 +175,25 @@ export async function connectKakaoMap(container, onSelect) {
     setCadastral(enabled) {
       if (enabled) map.addOverlayMapTypeId(maps.MapTypeId.USE_DISTRICT);
       else map.removeOverlayMapTypeId(maps.MapTypeId.USE_DISTRICT);
+    },
+    async resolveParcel(location) {
+      if (location?.parcel) return location.parcel;
+      if (!location?.coordinates?.every(Number.isFinite)) return null;
+      const [lat, lng] = location.coordinates;
+      const [addrResults, regionResults] = await Promise.all([
+        new Promise((resolve) => geocoder.coord2Address(lng, lat, (res, status) => resolve(status === maps.services.Status.OK ? res : []))),
+        new Promise((resolve) => geocoder.coord2RegionCode(lng, lat, (res, status) => resolve(status === maps.services.Status.OK ? res : []))),
+      ]);
+      const address = addrResults[0]?.address;
+      const legalDong = regionResults.find((item) => item.region_type === 'B');
+      if (!address?.main_address_no || !/^\d{10}$/.test(legalDong?.code || '')) return null;
+      return {
+        sigunguCd: legalDong.code.slice(0, 5),
+        bjdongCd: legalDong.code.slice(5, 10),
+        platGbCd: address.mountain_yn === 'Y' ? '1' : '0',
+        bun: String(address.main_address_no).trim(),
+        ji: String(address.sub_address_no || '0').trim() || '0',
+      };
     },
   };
 }
