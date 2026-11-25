@@ -19,6 +19,15 @@ function formatKoreanAmount(value) {
   if (man) parts.push(`${money.format(man)}만`);
   return parts.length ? `${parts.join(' ')}원` : `${money.format(value)}원`;
 }
+
+function formatArea(areaText) {
+  if (!areaText || areaUnit === 'sqm') return areaText || '';
+  return areaText.replace(/([\d,]+(?:\.\d+)?)\s*㎡/, (_, raw) => {
+    const sqm = Number(raw.replace(/,/g, ''));
+    if (!Number.isFinite(sqm)) return `${raw}㎡`;
+    return `${(sqm / 3.305785).toFixed(1)}평`;
+  });
+}
 const timeFormat = new Intl.DateTimeFormat('ko-KR', {
   timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
 });
@@ -46,6 +55,11 @@ let authRedirect = null;
 let panelOpen = false;
 let listFilter = 'all';
 let alertFilter = 'all';
+let areaUnit = 'sqm';
+let satelliteOn = false;
+let cadastralOn = false;
+let recentTargetIds = [];
+let openDocId = null;
 let selection = null;
 let targetId = null;
 let results = locations;
@@ -160,14 +174,52 @@ async function refreshAccount() {
 }
 
 function pinMeta(locationId) {
-  const summary = locationSummary(locationId);
-  if (!summary.total) return { label: '', hasDoc: false, count: 0 };
-  const hasDoc = summary.sharedCount > 0;
+  const data = registryState();
+  const matching = targets.filter((target) => target.locationId === locationId);
+  if (!matching.length) return { label: '', hasDoc: false, tone: 'empty', count: 0 };
+  const sharedCount = matching.filter((target) => documentsFor(data, target.id).length > 0).length;
+  const hasNeedsUpdate = matching.some((target) => needsUpdate(data, target.id));
+  const hasEvent = matching.some((target) => eventsFor(data, target.id).length > 0);
+  const hasDoc = sharedCount > 0;
+  const tone = hasNeedsUpdate || hasEvent ? 'alert' : hasDoc ? 'shared' : 'empty';
+  const tag = hasNeedsUpdate ? '갱신 필요' : hasEvent ? '변동 감지' : '';
   return {
-    label: hasDoc ? `공유 등기 ${summary.sharedCount}건` : `대상 ${summary.total}건, 공유 자료 없음`,
+    label: tag || (hasDoc ? `공유 등기 ${sharedCount}건` : `대상 ${matching.length}건, 공유 자료 없음`),
     hasDoc,
-    count: summary.total,
+    tone,
+    tag,
+    count: matching.length,
   };
+}
+
+function recordRecent(id) {
+  if (!id || !targets.some((item) => item.id === id)) return;
+  recentTargetIds = [id, ...recentTargetIds.filter((item) => item !== id)].slice(0, 4);
+}
+
+const clockIcon = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
+
+function renderRecentBar() {
+  const bar = document.querySelector('#recent-bar');
+  if (!bar) return;
+  const items = recentTargetIds.map((id) => targets.find((item) => item.id === id)).filter(Boolean);
+  bar.hidden = panelOpen || items.length === 0;
+  if (bar.hidden) return;
+  bar.innerHTML = `<div class="quick-head"><span class="quick-title">${clockIcon}최근 본 부동산</span><button type="button" class="quick-link" data-action="clear-recent">지우기</button></div>
+    <div class="popular-chips">${items.map((target) =>
+      `<button type="button" class="popular-chip recent-chip" data-action="open-target" data-id="${escape(target.id)}">${escape(targetLabel(target))}</button>`).join('')}</div>`;
+}
+
+function renderMapBreadcrumb() {
+  const crumb = document.querySelector('#map-breadcrumb');
+  if (!crumb) return;
+  if (selection) {
+    const parts = selection.area.split(' ').filter(Boolean);
+    const count = targets.filter((item) => item.locationId === selection.id).length;
+    crumb.innerHTML = `<span>${parts.map(escape).join(' › ')}</span><strong>${escape(selection.name)}</strong>${count ? `<span class="crumb-meta">대상 ${count}건</span>` : ''}`;
+  } else {
+    crumb.innerHTML = `<span>서울 전역</span><span class="crumb-meta">검증 위치 ${results.length}곳</span>`;
+  }
 }
 
 function refreshPins() {
@@ -183,16 +235,16 @@ function locationSummary(locationId) {
 }
 
 function renderPopularBar() {
+  const tray = document.querySelector('#quick-tray');
   const bar = document.querySelector('#popular-bar');
+  if (tray) tray.hidden = panelOpen;
   if (!bar) return;
   bar.hidden = panelOpen;
   if (panelOpen) return;
   const featured = locations.slice(0, 5);
-  bar.innerHTML = `<span class="popular-label">인기 주소</span>
+  bar.innerHTML = `<div class="quick-head"><span class="quick-title">인기 주소</span><button type="button" class="quick-link" data-action="open-list">전체 ${locations.length}곳 ›</button></div>
     <div class="popular-chips">${featured.map((location) =>
-      `<button type="button" class="popular-chip" data-action="quick-location" data-id="${escape(location.id)}"><span class="icon icon-pin" aria-hidden="true"></span>${escape(location.name)}</button>`).join('')}
-      <button type="button" class="popular-chip popular-chip-all" data-action="open-list">전체 ${locations.length}곳</button>
-    </div>`;
+      `<button type="button" class="popular-chip" data-action="quick-location" data-id="${escape(location.id)}"><span class="icon icon-pin" aria-hidden="true"></span>${escape(location.name)}</button>`).join('')}</div>`;
 }
 
 const listFilters = [
@@ -250,7 +302,7 @@ function renderTargetDetail(target) {
         ${needsUpdate(data, target.id) ? badge('문서 갱신 필요', 'warning') : latest ? badge(`버전 ${documents.length}건`, 'info') : badge('미등록', 'neutral')}
       </div>
       ${latest ? `<div class="doc-preview">
-          ${target.areaText ? `<div class="doc-preview-row"><span>면적·구조</span><strong>${escape(target.areaText)}</strong></div>` : ''}
+          ${target.areaText ? `<div class="doc-preview-row"><span>면적·구조</span><span class="area-inline"><strong>${escape(formatArea(target.areaText))}</strong><button type="button" class="unit-toggle" data-action="toggle-unit" aria-label="면적 단위 전환">${areaUnit === 'sqm' ? '평' : '㎡'}</button></span></div>` : ''}
           <div class="doc-preview-row"><span>소유권</span><strong>${escape(latest.owner)}</strong></div>
           <div class="doc-preview-row"><span>근저당권</span><strong class="${latest.amount === null ? 'is-clean' : 'is-debt'}">${latest.amount === null ? '표시 항목 없음' : formatKoreanAmount(latest.amount)}</strong></div>
         </div>
@@ -278,7 +330,10 @@ function renderLocation() {
         <div class="detail-topline-right">${badge('검증용 가상 자료', 'info')}<button type="button" class="icon-button panel-close" data-action="panel-close" aria-label="상세 닫기">×</button></div>
       </div>
       <h2 id="location-heading" tabindex="-1">${escape(selection.name)}</h2>
-      <p class="muted">${escape(selection.area)}${selection.subtitle ? ` · ${escape(selection.subtitle)}` : ''}</p>
+      <div class="address-row">
+        <p class="muted">${escape(selection.addresses?.[0] ? `${selection.area} · ${selection.addresses[0]}` : selection.area)}</p>
+        <button type="button" class="copy-chip" data-action="copy-address">주소 복사</button>
+      </div>
     </div>
     ${options.length ? `<section class="target-section"><div class="section-title"><h3>등기 대상 선택</h3>${badge(`${options.length}개 대상`)}</div>
       <div class="target-list" aria-label="검증용 등기 대상">${options.map((item) => {
@@ -303,6 +358,8 @@ function renderPanel() {
     drawerToggle.title = panelOpen ? '패널 접기' : '패널 열기';
   }
   renderPopularBar();
+  renderRecentBar();
+  renderMapBreadcrumb();
   const clearBtn = document.querySelector('#search-clear');
   if (clearBtn) clearBtn.hidden = !searchInput.value.trim();
   panel.hidden = !panelOpen;
@@ -539,7 +596,7 @@ function renderGuidePage() {
         <article class="guide-card">
           <div class="section-title"><h3>모의 검증 영역</h3>${badge('Mock / 준비 중', 'neutral')}</div>
           <ul class="guide-list">
-            <li>공공 장소 6곳에 연결된 가상 등기 대상 10건 및 샘플 문서 17종</li>
+            <li>서울 전역 50곳에 연결된 가상 등기 대상 ${targets.length}건 및 샘플 문서 ${samples.length}종</li>
             <li>6단계 수동 회차 기반 모의 등기변동 확인 및 앱 내 알림</li>
             <li>카카오·Google 소셜 OAuth 로그인 및 외부 등기 API 공급처 연동</li>
           </ul>
@@ -683,6 +740,7 @@ function selectLocation(location, specifiedTarget) {
   panelOpen = true;
   selection = location;
   targetId = specifiedTarget || targets.find((target) => target.locationId === location.id)?.id || null;
+  if (targetId) recordRecent(targetId);
   sheet = 'open';
   page = 'map';
   render();
@@ -800,6 +858,7 @@ function openDocument(id) {
   if (!target) return;
   const active = documentsFor(registryState(), target.id).find((item) => item.sampleId === id);
   if (!active) return;
+  openDocId = id;
   const location = locations.find((item) => item.id === target.locationId);
   showDialog('등기사항증명서 요약', `<div class="doc-banner">
       <div class="doc-banner-top">
@@ -814,9 +873,9 @@ function openDocument(id) {
     </div>
     <div class="doc-sections">
       <section class="doc-card">
-        <div class="section-title"><h3>표제부</h3>${badge('부동산 표시', 'neutral')}</div>
+        <div class="section-title"><h3>표제부</h3><button type="button" class="unit-toggle" data-action="toggle-unit">${areaUnit === 'sqm' ? '평으로 보기' : '㎡로 보기'}</button></div>
         <p>${escape(target.type)} · ${escape(targetLabel(target))}</p>
-        ${target.areaText || target.structure ? `<p class="doc-sub">${[target.areaText, target.structure].filter(Boolean).map(escape).join(' · ')}</p>` : ''}
+        ${target.areaText || target.structure ? `<p class="doc-sub">${[formatArea(target.areaText), target.structure].filter(Boolean).map(escape).join(' · ')}</p>` : ''}
         <p class="doc-sub">검증 식별번호 <code>${escape(target.id)}</code></p>
       </section>
       <section class="doc-card">
@@ -877,7 +936,8 @@ function openShare() {
   if (!target) return;
   const location = locations.find((item) => item.id === target.locationId);
   const suggested = samples.filter((sample) => sample.targetId === target.id);
-  const others = samples.filter((sample) => sample.targetId !== target.id);
+  const testIds = new Set(['unit-base', 'unreadable', 'unmasked', 'commercial-review', 'neighbor', 'officetel-301-base']);
+  const others = samples.filter((sample) => sample.targetId !== target.id && testIds.has(sample.id));
   showDialog('등기 자료 등록', `<div class="share-target-card">
       <div class="section-title"><strong>${escape(targetLabel(target))}</strong>${badge(target.type, 'info')}</div>
       <p class="muted">${location ? `${escape(location.name)} · ${escape(location.area)}` : ''} · 식별번호 <code>${escape(target.id)}</code></p>
@@ -1095,6 +1155,7 @@ document.addEventListener('submit', async (event) => {
 });
 
 dialog.addEventListener('close', () => {
+  openDocId = null;
   if (dialogTrigger?.isConnected) dialogTrigger.focus({ preventScroll: true });
 });
 
@@ -1119,6 +1180,10 @@ document.addEventListener('click', (event) => {
       sheet = 'open';
       renderPanel();
       refreshPins();
+      break;
+    case 'clear-recent':
+      recentTargetIds = [];
+      renderRecentBar();
       break;
     case 'clear-search':
       searchInput.value = '';
@@ -1174,6 +1239,7 @@ document.addEventListener('click', (event) => {
     }
     case 'target':
       targetId = id;
+      recordRecent(id);
       renderPanel();
       panel.querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
       break;
@@ -1199,6 +1265,33 @@ document.addEventListener('click', (event) => {
     case 'zoom-in': map.zoom(1); break;
     case 'zoom-out': map.zoom(-1); break;
     case 'map-reset': map.reset(); break;
+    case 'toggle-satellite':
+      satelliteOn = !satelliteOn;
+      map.setSatellite?.(satelliteOn);
+      control.setAttribute('aria-pressed', String(satelliteOn));
+      control.classList.toggle('is-active', satelliteOn);
+      break;
+    case 'toggle-cadastral':
+      cadastralOn = !cadastralOn;
+      map.setCadastral?.(cadastralOn);
+      control.setAttribute('aria-pressed', String(cadastralOn));
+      control.classList.toggle('is-active', cadastralOn);
+      break;
+    case 'copy-address': {
+      if (!selection) break;
+      const fullAddress = selection.addresses?.[0] ? `${selection.area} ${selection.addresses[0]}` : `${selection.area} ${selection.name}`;
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(fullAddress).then(() => notify('주소를 복사했어요.')).catch(() => notify('주소를 복사하지 못했어요.'));
+      } else {
+        notify(`주소: ${fullAddress}`);
+      }
+      break;
+    }
+    case 'toggle-unit':
+      areaUnit = areaUnit === 'sqm' ? 'pyeong' : 'sqm';
+      if (page === 'map') renderPanel();
+      if (dialog.open && openDocId) openDocument(openDocId);
+      break;
     case 'dialog-close': dialog.close(); break;
     case 'document': openDocument(id); break;
     case 'history': openHistory(id); break;
@@ -1265,6 +1358,8 @@ connectKakaoMap(liveContainer, selectLocation).then((liveMap) => {
   if (page === 'profile') render();
   if (!liveMap) return;
   map = liveMap;
+  if (satelliteOn) map.setSatellite?.(true);
+  if (cadastralOn) map.setCadastral?.(true);
   mapPage.dataset.mapMode = 'live';
   new ResizeObserver(([entry]) => {
     mapPage.style.setProperty('--map-panel-inset', `${entry.borderBoxSize[0].blockSize}px`);

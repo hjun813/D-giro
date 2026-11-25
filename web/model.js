@@ -1,4 +1,4 @@
-import { rounds, samples, targets } from './fixtures.js';
+import { initialDocumentIds, rounds, samples, targets } from './fixtures.js';
 
 const SNAPSHOT_VERSION = 2;
 const STORAGE_KEY = 'deunggiro-mvp-v1';
@@ -7,7 +7,7 @@ export function initialState() {
   return {
     version: SNAPSHOT_VERSION,
     userId: 'user-a',
-    documents: ['unit-base', 'unit-301-base', 'building-base', 'officetel-301-base', 'commercial-base', 'cheonggye-land-base'].map((sampleId) => {
+    documents: initialDocumentIds.map((sampleId) => {
       const sample = samples.find((item) => item.id === sampleId);
       return { sampleId, targetId: sample.targetId, registeredAt: '2026-11-15T02:00:00Z' };
     }),

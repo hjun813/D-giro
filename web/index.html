@@ -40,7 +40,12 @@
             <button type="button" data-action="zoom-out" aria-label="지도 축소">−</button>
           </div>
           <button type="button" data-action="map-reset" aria-label="기본 지도 위치로 이동"><span class="icon icon-locate" aria-hidden="true"></span></button>
+          <div class="layer-group" aria-label="지도 레이어">
+            <button type="button" id="toggle-satellite" data-action="toggle-satellite" aria-pressed="false" title="위성지도 전환">위성</button>
+            <button type="button" id="toggle-cadastral" data-action="toggle-cadastral" aria-pressed="false" title="지적편집도 표시">지적</button>
+          </div>
         </div>
+        <div id="map-breadcrumb" class="map-breadcrumb" aria-live="polite"></div>
         <div id="map-caption" class="map-caption">검증용 지도 · 실제 지형과 다를 수 있어요</div>
       </section>
       <aside class="map-overlay" aria-label="지도 검색과 등기 상세">
@@ -54,7 +59,10 @@
             <button type="submit" class="search-submit" aria-label="검색">검색</button>
           </form>
           <p id="search-feedback" class="search-feedback" role="status" hidden></p>
-          <div id="popular-bar" class="popular-bar" aria-label="인기 주소"></div>
+          <div id="quick-tray" class="quick-tray">
+            <div id="popular-bar" class="quick-section" aria-label="인기 주소"></div>
+            <div id="recent-bar" class="quick-section quick-section-recent" aria-label="최근 본 부동산" hidden></div>
+          </div>
         </div>
         <section id="results-panel" class="results-panel" aria-label="검색 결과 및 등기 상세" hidden></section>
       </aside>

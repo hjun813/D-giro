@@ -157,24 +157,33 @@ export async function connectKakaoMap(container, onSelect) {
       map.setLevel(4);
       map.setCenter(new maps.LatLng(...defaultCenter));
     },
+    setSatellite(enabled) {
+      map.setMapTypeId(enabled ? maps.MapTypeId.HYBRID : maps.MapTypeId.ROADMAP);
+    },
+    setCadastral(enabled) {
+      if (enabled) map.addOverlayMapTypeId(maps.MapTypeId.USE_DISTRICT);
+      else map.removeOverlayMapTypeId(maps.MapTypeId.USE_DISTRICT);
+    },
   };
 }
 
 function makePin(location, selected, pinMeta) {
   const info = typeof pinMeta === 'object' && pinMeta !== null
     ? pinMeta
-    : { label: pinMeta || '', hasDoc: String(pinMeta || '').endsWith('있음'), count: 0 };
+    : { label: pinMeta || '', hasDoc: String(pinMeta || '').endsWith('있음'), tone: String(pinMeta || '').endsWith('있음') ? 'shared' : 'empty', count: 0 };
+  const tone = info.tone || (info.hasDoc ? 'shared' : 'empty');
   const pin = document.createElement('button');
   pin.type = 'button';
-  pin.className = `map-pin${selected ? ' is-selected' : ''}${info.hasDoc ? ' has-doc' : ''}`;
+  pin.className = `map-pin pin-tone-${tone}${selected ? ' is-selected' : ''}${info.hasDoc ? ' has-doc' : ''}`;
   pin.setAttribute('aria-pressed', selected);
   pin.setAttribute('aria-label', `${location.name}${info.label ? `, ${info.label}` : ''}`);
-  pin.innerHTML = `<span class="pin-dot${info.hasDoc ? ' is-live' : ''}" aria-hidden="true"></span><span class="pin-name"></span>${info.count ? `<span class="pin-count" aria-hidden="true">${info.count}</span>` : ''}`;
+  pin.innerHTML = `<span class="pin-dot pin-dot-${tone}" aria-hidden="true"></span><span class="pin-name"></span>${info.tag ? `<span class="pin-tag" aria-hidden="true"></span>` : ''}${info.count ? `<span class="pin-count" aria-hidden="true">${info.count}</span>` : ''}`;
   pin.querySelector('.pin-name').textContent = location.name;
+  if (info.tag) pin.querySelector('.pin-tag').textContent = info.tag;
   return pin;
 }
 
-function drawPreviewMap(canvas, scale, offset) {
+function drawPreviewMap(canvas, scale, offset, { satellite = false, cadastral = false } = {}) {
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
   const { width, height } = canvas.getBoundingClientRect();
   if (!width || !height) return;
@@ -182,8 +191,10 @@ function drawPreviewMap(canvas, scale, offset) {
   canvas.height = height * ratio;
   const context = canvas.getContext('2d');
   context.scale(ratio, ratio);
-  const tones = ['#e9eded', '#e4e9e9', '#e3e9e7', '#edf0ef'];
-  context.fillStyle = '#eef1ef';
+  const tones = satellite
+    ? ['#22303c', '#1e2c37', '#263642', '#1c2934']
+    : ['#e9eded', '#e4e9e9', '#e3e9e7', '#edf0ef'];
+  context.fillStyle = satellite ? '#18242e' : '#eef1ef';
   context.fillRect(0, 0, width, height);
   context.translate(width * 0.5 + offset.x, height * 0.5 + offset.y);
   context.scale(scale, scale);
@@ -207,16 +218,17 @@ function drawPreviewMap(canvas, scale, offset) {
       context.fillStyle = tones[index];
       const inset = index * 2;
       context.fillRect(x + inset, y, 41 - inset, 32 - index * 2);
-      context.strokeStyle = '#f9fbfa';
+      context.strokeStyle = cadastral ? (satellite ? '#f59e0b99' : '#d9770688') : (satellite ? '#2e4150' : '#f9fbfa');
+      context.lineWidth = cadastral ? 1.2 : 1;
       context.strokeRect(x + inset, y, 41 - inset, 32 - index * 2);
     }
   }
   context.restore();
 
   function park(x, y, w, h) {
-    context.fillStyle = '#d8e9db';
+    context.fillStyle = satellite ? '#1f4434' : '#d8e9db';
     context.fillRect(x * width, y * height, w * width, h * height);
-    context.strokeStyle = '#eaf4eb';
+    context.strokeStyle = satellite ? '#2e5d49' : '#eaf4eb';
     context.lineWidth = 2;
     context.strokeRect(x * width + 5, y * height + 5, w * width - 10, h * height - 10);
   }
@@ -232,17 +244,28 @@ function drawPreviewMap(canvas, scale, offset) {
     [[0.86, -2], [0.83, 0.06], [0.81, 0.43], [0.87, 0.61], [0.81, 1], [0.88, 3]],
   ];
   for (const road of roads) {
-    line(road, '#dae2df', 15);
-    line(road, '#fffefa', 12);
+    line(road, satellite ? '#131d25' : '#dae2df', 15);
+    line(road, satellite ? '#394b59' : '#fffefa', 12);
   }
   const stream = [[-2, 0.74], [0, 0.26], [0.18, 0.465], [0.44, 0.48], [0.73, 0.465], [1, 0.39], [3, 0.36]];
-  line(stream, '#f7faf9', 11);
-  line(stream, '#c6e2e9', 7);
+  line(stream, satellite ? '#1b3847' : '#f7faf9', 11);
+  line(stream, satellite ? '#265c75' : '#c6e2e9', 7);
+
+  if (cadastral) {
+    context.save();
+    context.strokeStyle = satellite ? '#fbbf24b0' : '#d97706a0';
+    context.lineWidth = 1.5;
+    context.setLineDash([5, 3]);
+    for (const [x, y, w, h] of [[0.46, 0.36, 0.14, 0.12], [0.22, 0.54, 0.13, 0.13], [0.62, 0.17, 0.14, 0.11], [0.74, 0.5, 0.14, 0.12]]) {
+      context.strokeRect(x * width, y * height, w * width, h * height);
+    }
+    context.restore();
+  }
 
   const labels = [
-    [0.28, 0.235, '도심 공원', '#4e705a'], [0.72, 0.485, '산책로', '#4b707c'],
-    [0.52, 0.775, '시민 공원', '#4e705a'], [0.4, 0.305, '세종대로', '#64737d'],
-    [0.66, 0.65, '시청역', '#576978'], [0.36, 0.72, '서소문', '#64737d'],
+    [0.28, 0.235, '도심 공원', satellite ? '#8fd1a8' : '#4e705a'], [0.72, 0.485, '산책로', satellite ? '#8fd0e4' : '#4b707c'],
+    [0.52, 0.775, '시민 공원', satellite ? '#8fd1a8' : '#4e705a'], [0.4, 0.305, '세종대로', satellite ? '#c6d6e3' : '#64737d'],
+    [0.66, 0.65, '시청역', satellite ? '#c6d6e3' : '#576978'], [0.36, 0.72, '서소문', satellite ? '#c6d6e3' : '#64737d'],
   ];
   context.font = '600 12px Pretendard, sans-serif';
   context.textAlign = 'center';
@@ -259,9 +282,11 @@ export function createDemoMap(container, onSelect) {
   let offset = { x: 0, y: 0 };
   let drag = null;
   let pins = [];
+  let satellite = false;
+  let cadastral = false;
 
   function redraw() {
-    drawPreviewMap(canvas, scale, offset);
+    drawPreviewMap(canvas, scale, offset, { satellite, cadastral });
     for (const [pin, point] of pins) {
       const x = 50 + (point[0] - 50) * scale;
       const y = 50 + (point[1] - 50) * scale;
@@ -309,6 +334,14 @@ export function createDemoMap(container, onSelect) {
     reset() {
       scale = 1;
       offset = { x: 0, y: 0 };
+      redraw();
+    },
+    setSatellite(enabled) {
+      satellite = enabled;
+      redraw();
+    },
+    setCadastral(enabled) {
+      cadastral = enabled;
       redraw();
     },
   };
