@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { documentsFor, initialState, loadState, needsUpdate, runRound, saveState, submitSample, toggleWatch } from '../web/model.js';
-import { demoSearch } from '../web/map.js';
+import { documentsFor, eventsFor, initialState, loadState, needsUpdate, runRound, saveState, submitSample, toggleWatch } from '../web/model.js';
+import { demoSearch, normalizeKakaoResult } from '../web/map.js';
 
 const unit = 'sample-unit-101';
 const neighbor = 'sample-unit-102';
@@ -13,6 +13,15 @@ test('주소, 지번, 건물명으로 같은 검증 위치를 검색한다', () 
     assert.equal(demoSearch(term)[0].id, 'city-hall');
   }
   assert.deepEqual(demoSearch('없는검색결과'), []);
+});
+
+test('같은 공공 장소의 카카오 주소 결과와 부서명 결과를 하나의 검증 위치 이름으로 표시한다', () => {
+  const coordinates = { x: '126.9784', y: '37.5663' };
+  const address = normalizeKakaoResult({ ...coordinates, address_name: '서울 중구 세종대로 110' });
+  const office = normalizeKakaoResult({ ...coordinates, id: 'office', place_name: '서울특별시청 부서', road_address_name: '서울 중구 세종대로 110' });
+  assert.equal(address.id, 'city-hall');
+  assert.equal(office.id, address.id);
+  assert.equal(office.name, '서울시청');
 });
 
 test('동일 위치의 호수를 구분하고 틀린 문서와 보류된 자료의 게시를 막는다', () => {
@@ -66,10 +75,24 @@ test('조회 실패와 지연 응답에도 문서와 사건 상태를 보존한�
   assert.equal(state.checks[unit].lastSuccessAt, lastSuccessAt);
   assert.equal(needsUpdate(state, unit), true);
   assert.equal(runRound(state).newNotifications, 0);
-  assert.equal(state.events[unit].kind, 'completed');
+  assert.deepEqual(eventsFor(state, unit).map((event) => event.kind), ['received', 'completed']);
   submitSample(state, userA, unit, 'unit-new');
   assert.equal(needsUpdate(state, unit), false);
   assert.equal(documentsFor(state, unit)[0].amount, 150000000);
+});
+
+test('기존 저장 기록의 알림과 최근 상태에서 확인된 변동 이력을 복원한다', () => {
+  const state = initialState();
+  state.version = 1;
+  state.events[unit] = { id: `${unit}:application-1`, kind: 'completed', at: '2026-11-23T07:00:00Z' };
+  state.notifications = [
+    { userId: userA, targetId: unit, kind: 'received', at: '2026-11-23T03:00:00Z' },
+    { userId: userB, targetId: unit, kind: 'received', at: '2026-11-23T03:00:00Z' },
+  ];
+  const restored = loadState({ getItem: () => JSON.stringify(state) });
+  assert.deepEqual(eventsFor(restored, unit).map((event) => event.kind), ['received', 'completed']);
+  assert.equal(restored.notifications.length, 2);
+  assert.equal(needsUpdate(restored, unit), true);
 });
 
 test('테스트 사용자와 관심 등록을 로컬 스냅샷에서 복원한다', () => {

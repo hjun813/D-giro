@@ -42,6 +42,8 @@ export const samples = [
   { id: 'land-base', targetId: 'sample-land', name: '토지 기본 자료', format: '이미지', issuedAt: '2026-11-09T03:15:00Z', owner: '가상 소유자 E', amount: null },
 ];
 
+export const sampleFilename = (sample) => `${sample.id}.${sample.format === 'PDF' ? 'pdf' : 'png'}`;
+
 export const rounds = [
   { label: '기준 조회 · 새 변동 미감지', kind: 'no-change', at: '2026-11-23T00:00:00Z' },
   { label: '등기신청 접수', kind: 'received', at: '2026-11-23T03:00:00Z' },

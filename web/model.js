@@ -1,6 +1,6 @@
 import { rounds, samples, targets } from './fixtures.js';
 
-const SNAPSHOT_VERSION = 1;
+const SNAPSHOT_VERSION = 2;
 const STORAGE_KEY = 'deunggiro-mvp-v1';
 
 export function initialState() {
@@ -24,10 +24,23 @@ export function initialState() {
 export function loadState(storage) {
   try {
     const stored = JSON.parse(storage.getItem(STORAGE_KEY));
-    if (stored?.version === SNAPSHOT_VERSION && Array.isArray(stored.documents) &&
+    if ((stored?.version === 1 || stored?.version === SNAPSHOT_VERSION) && Array.isArray(stored.documents) &&
         Array.isArray(stored.submissions) && Array.isArray(stored.notifications) &&
         Array.isArray(stored.watches?.[stored.userId]) && stored.checks && stored.events &&
-        Number.isInteger(stored.round) && stored.round >= 0 && stored.round <= rounds.length) return stored;
+        Number.isInteger(stored.round) && stored.round >= 0 && stored.round <= rounds.length) {
+      if (stored.version === 1) {
+        // Earlier snapshots kept only the latest event. Stored alerts can recover a prior observed state.
+        const events = Object.fromEntries(Object.entries(stored.events).map(([id, event]) => [id, [event]]));
+        for (const alert of stored.notifications) {
+          const history = events[alert.targetId];
+          if (!history || history.some((event) => event.kind === alert.kind)) continue;
+          history.push({ id: history[0].id, kind: alert.kind, at: alert.at });
+        }
+        for (const history of Object.values(events)) history.sort((a, b) => a.at.localeCompare(b.at));
+        return { ...stored, version: SNAPSHOT_VERSION, events };
+      }
+      return stored;
+    }
   } catch {
     // The demo is usable in browser sessions with storage disabled.
   }
@@ -48,8 +61,12 @@ export function documentsFor(state, targetId) {
     .sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
 }
 
+export function eventsFor(state, targetId) {
+  return state.events[targetId] || [];
+}
+
 export function needsUpdate(state, targetId) {
-  const event = state.events[targetId];
+  const event = eventsFor(state, targetId).at(-1);
   const latest = documentsFor(state, targetId)[0];
   return Boolean(latest && event?.kind === 'completed' && latest.reflectedEvent !== event.id);
 }
@@ -89,7 +106,8 @@ export function runRound(state) {
   let newNotifications = 0;
   for (const targetId of targetIds) {
     const previousCheck = state.checks[targetId];
-    const previousEvent = state.events[targetId];
+    const history = eventsFor(state, targetId);
+    const previousEvent = history.at(-1);
     const lastSuccessAt = round.kind === 'failure' ? previousCheck?.lastSuccessAt : round.at;
     const eventKind = round.kind === 'received' || round.kind === 'completed';
     const advances = eventKind && previousEvent?.kind !== 'completed' && previousEvent?.kind !== round.kind;
@@ -101,7 +119,7 @@ export function runRound(state) {
     if (!advances) continue;
 
     const event = { id: `${targetId}:application-1`, kind: round.kind, at: round.at };
-    state.events[targetId] = event;
+    state.events[targetId] = [...history, event];
     if (!previousCheck?.lastSuccessAt) continue;
 
     for (const [userId, watched] of Object.entries(state.watches)) {

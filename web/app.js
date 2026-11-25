@@ -1,6 +1,7 @@
-import { locations, rounds, samples, targetLabel, targets, users } from './fixtures.js';
-import { documentsFor, initialState, loadState, needsUpdate, runRound, saveState, submitSample, toggleWatch } from './model.js';
+import { locations, rounds, sampleFilename, samples, targetLabel, targets, users } from './fixtures.js';
+import { documentsFor, eventsFor, initialState, loadState, needsUpdate, runRound, saveState, submitSample, toggleWatch } from './model.js';
 import { connectKakaoMap, createDemoMap } from './map.js';
+import { identifySampleFile } from './uploads.js';
 
 const mapPage = document.querySelector('#map-page');
 const subPage = document.querySelector('#sub-page');
@@ -29,12 +30,34 @@ let sheet = 'open';
 let toastTimer;
 let dialogTrigger;
 let map = createDemoMap(document.querySelector('#map-demo'), selectLocation);
+let mapStatus = 'connecting';
 
 const statusLabels = {
   published: ['공유 완료', 'success'], duplicate: ['이미 공유된 자료', 'info'], mismatch: ['등기 대상 불일치', 'warning'],
   review: ['검수 보류', 'warning'], unreadable: ['등기 대상 식별 불가', 'danger'],
   'no-change': ['새 변동 미감지', 'neutral'], failure: ['최근 조회 실패', 'danger'],
   received: ['등기신청 접수', 'info'], completed: ['등기 완료', 'info'],
+};
+
+const mapStatuses = {
+  connecting: ['카카오맵 연결 확인 중', '검증용 지도로 먼저 위치를 탐색할 수 있어요.'],
+  unconfigured: ['검증용 지도', '카카오맵 키를 설정하면 실제 지도와 주소 검색을 사용할 수 있어요.'],
+  live: ['카카오맵 연결됨', '실제 지도에서 도로명·지번과 건물명을 검색할 수 있어요.'],
+  failed: ['카카오맵 연결 실패', `카카오 개발자 설정에서 JavaScript 키와 SDK 도메인(${window.location.origin})을 확인해 주세요.`],
+};
+
+const uploadErrors = {
+  empty: '파일을 선택해 주세요.',
+  'invalid-type': 'PDF 또는 PNG 파일을 선택해 주세요.',
+  'too-large': '5 MB 이하의 파일을 선택해 주세요.',
+  unknown: '예시 파일을 확인할 수 없어요. 아래 목록에서 받은 검증용 파일을 선택해 주세요.',
+};
+
+const reviewMessages = {
+  duplicate: '이미 공유된 자료예요. 업로드 이력에 제출 결과를 남겼어요.',
+  mismatch: '등기 대상 불일치. 이 호수의 예시 파일을 선택해 주세요.',
+  review: '검수 보류. 이 자료는 업로드 이력에서 확인할 수 있어요.',
+  unreadable: '등기 대상 식별 불가. 대상 식별번호가 표시된 예시 파일을 선택해 주세요.',
 };
 
 function badge(label, tone = 'neutral') {
@@ -81,7 +104,8 @@ function renderTargetDetail(target) {
   const documents = documentsFor(state, target.id);
   const latest = documents[0];
   const check = state.checks[target.id];
-  const event = state.events[target.id];
+  const events = eventsFor(state, target.id);
+  const event = events.at(-1);
   const watched = state.watches[state.userId].includes(target.id);
   return `<section class="detail-section"><div class="section-title"><h3>공유 등기 자료</h3>${needsUpdate(state, target.id) ? badge('문서 갱신 필요', 'warning') : ''}</div>
     ${latest ? `<dl class="detail-list"><div><dt>발급 시각</dt><dd>${formatTime(latest.issuedAt)}</dd></div><div><dt>서비스 등록</dt><dd>${formatTime(latest.registeredAt)}</dd></div></dl>
@@ -91,7 +115,8 @@ function renderTargetDetail(target) {
   <section class="detail-section"><div class="section-title"><h3>변동 확인</h3>${status(check?.outcome)}</div>
     <dl class="detail-list"><div><dt>마지막 확인 성공</dt><dd>${formatTime(check?.lastSuccessAt)}</dd></div>
       ${event ? `<div><dt>확인된 신청 상태</dt><dd>${statusLabels[event.kind][0]}</dd></div>` : ''}</dl>
-    ${button(watched ? '관심 해제' : '관심 등록', 'watch', { id: target.id })}
+    <div class="button-row">${button(watched ? '관심 해제' : '관심 등록', 'watch', { id: target.id })}
+      ${button('이력 보기', 'history', { id: target.id, kind: 'quiet' })}</div>
   </section>`;
 }
 
@@ -146,14 +171,22 @@ function renderProfilePage() {
   return `<div class="page-heading"><h1 tabindex="-1">내 정보</h1><p>테스트 사용자를 전환하고 검증 시나리오를 실행할 수 있어요.</p></div>
     <section class="page-section"><h2>테스트 사용자</h2><div class="button-row user-switch">${users.map((user) =>
       `<button type="button" class="button ${user.id === state.userId ? 'primary' : 'secondary'}" data-action="user" data-id="${user.id}" aria-pressed="${user.id === state.userId}">${escape(user.name)}</button>`).join('')}</div></section>
+    <section class="page-section"><div class="section-title"><h2>지도 연결</h2>${badge(mapStatuses[mapStatus][0], mapStatus === 'live' ? 'success' : mapStatus === 'failed' ? 'warning' : 'neutral')}</div>
+      <p class="muted">${escape(mapStatuses[mapStatus][1])}</p></section>
     <section class="page-section"><h2>모의 변동 확인</h2>
       <p class="muted">${next ? `다음 회차 ${escape(next.label)}` : '준비된 조회 회차를 모두 실행했어요.'}</p>
       ${!canRun && next ? '<p class="muted">실행하려면 지도에서 하나 이상의 대상을 관심 등록하세요.</p>' : ''}
       ${state.lastRound ? `<p class="notice" role="status">${escape(state.lastRound.label)} · 대상 ${state.lastRound.count}곳 조회 · 새 알림 ${state.lastRound.newNotifications}건</p>` : ''}
       <div class="button-row">${button('변동 확인 실행', 'run-round', { kind: 'primary', disabled: !canRun })}${button('검증 초기화', 'reset-open', { kind: 'quiet' })}</div>
     </section>
-    <section class="page-section"><h2>내가 공유한 자료</h2>
-      ${submissions.length ? `<div class="record-list">${submissions.map((item) => `<div class="record-row"><span class="record-title"><strong>${escape(samples.find((sample) => sample.id === item.sampleId).name)}</strong><span>${formatTime(item.at)}</span></span>${status(item.status)}</div>`).join('')}</div>` : '<p class="muted">아직 제출한 가상 자료가 없어요.</p>'}
+    <section class="page-section"><h2>업로드 이력</h2>
+      ${submissions.length ? `<div class="record-list">${submissions.map((item) => {
+        const sample = samples.find((value) => value.id === item.sampleId);
+        const target = targets.find((value) => value.id === item.targetId);
+        return `<div class="record-row"><span class="record-title"><strong>${escape(sample.name)}</strong>
+          <span>${escape(targetLabel(target))} · ${formatTime(item.at)}</span></span>
+          <div class="record-actions">${status(item.status)}${item.status === 'published' || item.status === 'duplicate' ? button('자료 보기', 'document', { id: item.sampleId, kind: 'quiet' }) : ''}</div></div>`;
+      }).join('')}</div>` : '<p class="muted">아직 제출한 가상 자료가 없어요.</p>'}
     </section>`;
 }
 
@@ -202,31 +235,118 @@ function openTarget(id) {
 
 function showDialog(title, content) {
   if (!dialog.open) dialogTrigger = document.activeElement;
-  dialog.innerHTML = `<div class="dialog-content"><div class="dialog-heading"><h2 id="dialog-title">${escape(title)}</h2><button type="button" class="icon-button" data-action="dialog-close" aria-label="닫기">×</button></div>${content}</div>`;
+  dialog.innerHTML = `<div class="dialog-content"><div class="dialog-heading"><h2 id="dialog-title" tabindex="-1">${escape(title)}</h2><button type="button" class="icon-button" data-action="dialog-close" aria-label="닫기">×</button></div>${content}</div>`;
   if (!dialog.open) dialog.showModal();
+  dialog.querySelector('#dialog-title').focus({ preventScroll: true });
 }
 
 function openDocument(id) {
-  const documents = documentsFor(state, targetId);
-  const active = documents.find((item) => item.sampleId === id) || documents[0];
+  const sample = samples.find((item) => item.id === id);
+  const target = targets.find((item) => item.id === sample?.targetId);
+  if (!target) return;
+  const active = documentsFor(state, target.id).find((item) => item.sampleId === id);
   if (!active) return;
-  const target = targets.find((item) => item.id === targetId);
   showDialog('공유 등기 자료', `<p>${escape(targetLabel(target))} ${badge('검증용 가상 자료', 'info')}</p>
     <dl class="detail-list"><div><dt>발급 시각</dt><dd>${formatTime(active.issuedAt)}</dd></div><div><dt>서비스 등록</dt><dd>${formatTime(active.registeredAt)}</dd></div></dl>
     <div class="document-section"><h3>표제부</h3><p>${escape(target.type)} · ${escape(targetLabel(target))}</p></div>
     <div class="document-section"><h3>갑구</h3><p>소유권 · ${escape(active.owner)}</p></div>
     <div class="document-section"><h3>을구</h3><p>${active.amount === null ? '이 샘플에는 표시할 근저당권 항목이 없어요.' : `근저당권 채권최고액 <strong>${money.format(active.amount)}원</strong>`}</p></div>
-    ${documents.length > 1 ? `<div class="document-section"><h3>문서 버전</h3><div class="version-list">${documents.map((item) => button(`${item.name} · ${formatTime(item.issuedAt)}`, 'document', { id: item.sampleId, disabled: item.sampleId === active.sampleId, kind: 'quiet' })).join('')}</div></div>` : ''}`);
+    <div class="button-row"><a class="button sample-link secondary" href="/samples/${sampleFilename(sample)}" download>예시 원본 받기</a>${button('이력 보기', 'history', { id: target.id, kind: 'quiet' })}</div>`);
+}
+
+function openHistory(id) {
+  const target = targets.find((item) => item.id === id);
+  if (!target) return;
+  const data = state;
+  const documents = documentsFor(data, id);
+  const events = [...eventsFor(data, id)].reverse();
+  showDialog('등기 이력', `<p>${escape(targetLabel(target))} ${badge('검증용 가상 자료', 'info')}</p>
+    <section class="document-section"><h3>문서 버전</h3>
+      ${documents.length ? `<ul class="history-list">${documents.map((item, index) => `<li>
+        <div class="history-entry"><strong>${escape(item.name)}</strong>${index === 0 ? badge('최신', 'info') : ''}</div>
+        <p>발급 ${formatTime(item.issuedAt)}<br>등록 ${formatTime(item.registeredAt)}</p>
+        ${button('자료 보기', 'document', { id: item.sampleId, kind: 'quiet' })}</li>`).join('')}</ul>` : '<p>공유된 문서 버전이 없어요.</p>'}
+    </section>
+    <section class="document-section"><h3>등기변동 이력</h3>
+      ${events.length ? `<ul class="history-list">${events.map((item) => `<li><div class="history-entry">${status(item.kind)}<time datetime="${item.at}">${formatTime(item.at)}</time></div></li>`).join('')}</ul>` : '<p>확인된 변동 이력이 없어요.</p>'}
+    </section>`);
 }
 
 function openShare() {
   const target = targets.find((item) => item.id === targetId);
+  const suggested = samples.filter((sample) => sample.targetId === target.id);
+  const allSamples = [...suggested, ...samples.filter((sample) => sample.targetId !== target.id)];
   showDialog('등기 자료 공유', `<p><strong>${escape(targetLabel(target))}</strong></p>
-    <p class="muted">서비스 검증용 샘플과 미리 정의된 검수 결과를 사용해요.</p>
-    <form id="sample-form"><label for="sample-choice">검증용 샘플</label><select id="sample-choice" name="sample" required>
-      <option value="">샘플을 선택하세요</option>${samples.map((sample) => `<option value="${sample.id}">${escape(sample.name)} (${sample.format})</option>`).join('')}
-    </select><button type="submit" class="button primary">샘플 제출</button></form>`);
+    <p class="muted" id="sample-file-hint">예시 PDF 또는 PNG 파일을 올려 주세요. 파일은 브라우저에서 확인해요.</p>
+    <form id="sample-form"><label for="sample-file">검증용 파일</label>
+      <input id="sample-file" name="sample" type="file" accept=".pdf,.png,application/pdf,image/png" aria-describedby="sample-file-hint" required>
+      <p class="upload-feedback" role="status" hidden></p>
+      <button type="submit" class="button primary">파일 업로드</button></form>
+    <details class="sample-files"><summary>예시 파일 내려받기</summary>
+      <ul>${allSamples.map((sample) => `<li><a href="/samples/${sampleFilename(sample)}" download>${escape(sample.name)} <span>${sample.format === 'PDF' ? 'PDF' : 'PNG'}</span></a></li>`).join('')}</ul>
+    </details>`);
 }
+
+let sampleIndex;
+async function getSampleIndex() {
+  if (!sampleIndex) {
+    const response = await fetch('/sample-index.json');
+    if (!response.ok) throw new Error('예시 파일 목록을 불러오지 못했습니다.');
+    sampleIndex = await response.json();
+  }
+  return sampleIndex;
+}
+
+async function uploadSample(form) {
+  const input = form.elements.sample;
+  const submit = form.querySelector('button[type="submit"]');
+  const feedback = form.querySelector('.upload-feedback');
+  const selectedTarget = targetId;
+  const selectedUser = state.userId;
+  if (submit.disabled) return;
+  const file = input.files[0];
+  input.disabled = true;
+  submit.disabled = true;
+  submit.textContent = '파일 확인 중';
+  feedback.hidden = true;
+  feedback.dataset.tone = 'danger';
+
+  try {
+    const result = await identifySampleFile(file, getSampleIndex);
+    if (!dialog.open || !form.isConnected) return;
+    if (result.error) {
+      feedback.textContent = uploadErrors[result.error];
+    } else {
+      const submission = submitSample(state, selectedUser, selectedTarget, result.sampleId);
+      if (!submission) throw new Error('검증용 파일을 확인하지 못했습니다.');
+      saveState(storage, state);
+      if (submission.status === 'published') {
+        dialog.close();
+        render();
+        refreshPins();
+        panel.querySelector('[data-action="share"]')?.focus();
+        notify('검증용 자료를 공유했어요.');
+        return;
+      }
+      feedback.textContent = reviewMessages[submission.status];
+      feedback.dataset.tone = statusLabels[submission.status][1];
+    }
+    feedback.hidden = false;
+  } catch {
+    if (form.isConnected) {
+      feedback.textContent = '파일 확인에 실패했어요. 다시 시도해 주세요.';
+      feedback.hidden = false;
+    }
+  } finally {
+    input.disabled = false;
+    submit.disabled = false;
+    submit.textContent = '파일 업로드';
+  }
+}
+
+dialog.addEventListener('change', (event) => {
+  if (event.target.id === 'sample-file') dialog.querySelector('.upload-feedback').hidden = true;
+});
 
 function changePage(value) {
   page = value;
@@ -238,15 +358,7 @@ function changePage(value) {
 document.addEventListener('submit', async (event) => {
   if (event.target.id === 'sample-form') {
     event.preventDefault();
-    const sampleId = new FormData(event.target).get('sample');
-    const submission = submitSample(state, state.userId, targetId, sampleId);
-    if (!submission) return;
-    saveState(storage, state);
-    dialog.close();
-    render();
-    refreshPins();
-    panel.querySelector('[data-action="share"]')?.focus({ preventScroll: true });
-    notify(statusLabels[submission.status][0]);
+    await uploadSample(event.target);
     return;
   }
   if (event.target.id !== 'search-form') return;
@@ -276,6 +388,7 @@ document.addEventListener('submit', async (event) => {
   renderPanel();
   panel.querySelector('.panel-content').scrollTop = 0;
   refreshPins();
+  map.showResults?.(results);
 });
 
 dialog.addEventListener('close', () => {
@@ -318,6 +431,7 @@ document.addEventListener('click', (event) => {
     case 'map-reset': map.reset(); break;
     case 'dialog-close': dialog.close(); break;
     case 'document': openDocument(id); break;
+    case 'history': openHistory(id); break;
     case 'share': openShare(); break;
     case 'watch': {
       const watching = toggleWatch(state, state.userId, id);
@@ -368,15 +482,23 @@ render();
 refreshPins();
 const liveContainer = document.querySelector('#map-live');
 connectKakaoMap(liveContainer, selectLocation).then((liveMap) => {
+  mapStatus = liveMap ? 'live' : 'unconfigured';
+  document.querySelector('#map-mode').textContent = mapStatuses[mapStatus][0];
+  if (page === 'profile') render();
   if (!liveMap) return;
   map = liveMap;
+  mapPage.dataset.mapMode = 'live';
+  new ResizeObserver(([entry]) => {
+    mapPage.style.setProperty('--map-panel-inset', `${entry.borderBoxSize[0].blockSize}px`);
+  }).observe(panel);
   liveContainer.hidden = false;
   document.querySelector('#map-demo').hidden = true;
-  document.querySelector('#map-mode').textContent = '카카오맵';
   document.querySelector('#map-caption').hidden = true;
   refreshPins();
   if (selection) map.select(selection);
 }).catch(() => {
+  mapStatus = 'failed';
   liveContainer.hidden = true;
-  document.querySelector('#map-mode').textContent = '지도 연결 실패 · 검증용 지도';
+  document.querySelector('#map-mode').textContent = mapStatuses[mapStatus][0];
+  if (page === 'profile') render();
 });

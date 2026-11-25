@@ -1,5 +1,7 @@
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { sampleFilename, samples } from './web/fixtures.js';
 
 const port = Number(process.env.PORT || 4173);
 const files = new Map([
@@ -8,9 +10,24 @@ const files = new Map([
   ['/model.js', ['web/model.js', 'text/javascript; charset=utf-8']],
   ['/fixtures.js', ['web/fixtures.js', 'text/javascript; charset=utf-8']],
   ['/map.js', ['web/map.js', 'text/javascript; charset=utf-8']],
+  ['/uploads.js', ['web/uploads.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['web/styles.css', 'text/css; charset=utf-8']],
   ['/logo.png', ['logo.png', 'image/png']],
 ]);
+
+const samplePaths = samples.map((sample) => {
+  const route = `/samples/${sampleFilename(sample)}`;
+  const path = `web${route}`;
+  files.set(route, [path, sample.format === 'PDF' ? 'application/pdf' : 'image/png']);
+  return [sample.id, path];
+});
+
+async function sampleIndex() {
+  return Object.fromEntries(await Promise.all(samplePaths.map(async ([id, path]) => {
+    const data = await readFile(new URL(path, import.meta.url));
+    return [createHash('sha256').update(data).digest('hex'), id];
+  })));
+}
 
 const server = createServer(async (request, response) => {
   const path = request.url.split('?')[0];
@@ -27,6 +44,18 @@ const server = createServer(async (request, response) => {
     response.end(request.method === 'HEAD' ? undefined : JSON.stringify({
       javascriptKey: process.env.KAKAO_MAP_JS_KEY?.trim() || '',
     }));
+    return;
+  }
+
+  if (path === '/sample-index.json') {
+    try {
+      const index = await sampleIndex();
+      response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      response.end(request.method === 'HEAD' ? undefined : JSON.stringify(index));
+    } catch (error) {
+      console.error(error);
+      response.writeHead(500).end();
+    }
     return;
   }
 

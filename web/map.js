@@ -20,7 +20,7 @@ function matchDemoLocation(result) {
   });
 }
 
-function normalizeResult(result) {
+export function normalizeKakaoResult(result) {
   const addresses = [result.road_address_name, result.address_name].filter(Boolean);
   const item = {
     id: `search:${result.id || `${result.y},${result.x}`}`,
@@ -30,7 +30,7 @@ function normalizeResult(result) {
     addresses,
   };
   const fixture = matchDemoLocation(item);
-  return fixture ? { ...item, id: fixture.id, subtitle: fixture.subtitle } : item;
+  return fixture ? { ...item, id: fixture.id, name: fixture.name, subtitle: fixture.subtitle } : item;
 }
 
 export async function connectKakaoMap(container, onSelect) {
@@ -60,6 +60,16 @@ export async function connectKakaoMap(container, onSelect) {
 
   const { maps } = window.kakao;
   container.hidden = false;
+  if (!container.clientWidth || !container.clientHeight) {
+    await new Promise((resolve) => {
+      const observer = new ResizeObserver(() => {
+        if (!container.clientWidth || !container.clientHeight) return;
+        observer.disconnect();
+        resolve();
+      });
+      observer.observe(container);
+    });
+  }
   const map = new maps.Map(container, { center: new maps.LatLng(...defaultCenter), level: 4 });
   await new Promise((resolve, reject) => {
     const onTilesLoaded = () => {
@@ -103,8 +113,8 @@ export async function connectKakaoMap(container, onSelect) {
         throw new Error('검색을 완료하지 못했습니다.');
       }
       const results = new Map();
-      for (const result of raw.map(normalizeResult)) {
-        if (result.coordinates.every(Number.isFinite)) results.set(result.id, result);
+      for (const result of raw.map(normalizeKakaoResult)) {
+        if (!results.has(result.id) && result.coordinates.every(Number.isFinite)) results.set(result.id, result);
       }
       return [...results.values()];
     },
@@ -121,6 +131,13 @@ export async function connectKakaoMap(container, onSelect) {
     },
     select(location) {
       map.setCenter(new maps.LatLng(...location.coordinates));
+    },
+    showResults(items) {
+      if (items.length === 1) this.select(items[0]);
+      if (items.length < 2) return;
+      const bounds = new maps.LatLngBounds();
+      for (const location of items) bounds.extend(new maps.LatLng(...location.coordinates));
+      map.setBounds(bounds, 70);
     },
     zoom(delta) {
       map.setLevel(Math.min(13, Math.max(1, map.getLevel() - delta)));
