@@ -10,6 +10,7 @@ export default function DeunggiroApp({ initialPage = 'map' }: { initialPage?: st
 
   return (
     <>
+      <div id="route-progress" className="route-progress" aria-hidden="true"></div>
       <header className="site-header">
         <div className="header-brand">
           <a className="brand-link" href="/" aria-label="등기로 홈">

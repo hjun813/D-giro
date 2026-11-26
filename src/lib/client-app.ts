@@ -88,7 +88,38 @@ let suggestTimer;
 let suggestSequence = 0;
 let sheet = 'open';
 let toastTimer;
+let progressTimer;
 let dialogTrigger;
+
+function pulseProgress(duration = 320) {
+  const bar = document.querySelector('#route-progress');
+  if (!bar) return;
+  clearTimeout(progressTimer);
+  bar.classList.remove('is-done', 'is-active');
+  void bar.offsetWidth;
+  bar.classList.add('is-active');
+  if (duration > 0) {
+    progressTimer = setTimeout(() => {
+      bar.classList.remove('is-active');
+      bar.classList.add('is-done');
+      progressTimer = setTimeout(() => bar.classList.remove('is-done'), 260);
+    }, duration);
+  }
+}
+
+function finishProgress() {
+  const bar = document.querySelector('#route-progress');
+  if (!bar) return;
+  clearTimeout(progressTimer);
+  bar.classList.remove('is-active');
+  bar.classList.add('is-done');
+  progressTimer = setTimeout(() => bar.classList.remove('is-done'), 260);
+}
+
+function renderSkeletonCards(count = 3) {
+  return `<div class="skeleton-list" aria-busy="true" aria-label="불러오는 중">${Array.from({ length: count }, () =>
+    `<div class="skeleton-card"><span class="skeleton-line w-40"></span><span class="skeleton-line w-85"></span><span class="skeleton-line w-60"></span></div>`).join('')}</div>`;
+}
 let map = createDemoMap(document.querySelector('#map-demo'), selectLocation);
 let mapStatus = 'connecting';
 let ledgerConfigured = false;
@@ -352,6 +383,7 @@ async function loadBuildingLedger(location) {
   const sequence = ++ledgerSequence;
   ledgerState = { locationId: location.id, status: 'loading', data: null, selectedUnitId: null, message: '' };
   renderPanel();
+  pulseProgress(0);
   try {
     const parcel = await map.resolveParcel?.(location);
     if (sequence !== ledgerSequence || selection?.id !== location.id) return;
@@ -380,6 +412,8 @@ async function loadBuildingLedger(location) {
   } catch {
     if (sequence !== ledgerSequence || selection?.id !== location.id) return;
     ledgerState = { locationId: location.id, status: 'error', data: null, selectedUnitId: null, message: '건축물대장 서버에 연결하지 못했어요.' };
+  } finally {
+    if (sequence === ledgerSequence) finishProgress();
   }
   renderPanel();
 }
@@ -389,7 +423,10 @@ function renderBuildingLedgerSection() {
     return '<p class="notice">이 위치의 검증용 데이터가 없어요.</p>';
   }
   if (ledgerState.status === 'loading') {
-    return '<div class="detail-cards"><section class="info-card"><div class="section-title"><h3>공공 건축물대장 조회</h3><span class="badge badge-info">조회 중</span></div><p class="muted" role="status">국토교통부 건축물대장에서 건물·동·호수 정보를 불러오고 있어요.</p></section></div>';
+    return `<div class="detail-cards"><section class="info-card">
+      <div class="section-title"><h3>공공 건축물대장 조회</h3><span class="badge badge-info"><span class="spinner spinner-sm" aria-hidden="true"></span>조회 중</span></div>
+      ${renderSkeletonCards(1)}
+    </section></div>`;
   }
   if (ledgerState.status === 'unconfigured') {
     return `<div class="detail-cards"><section class="info-card">
@@ -514,7 +551,7 @@ function renderPanel() {
 }
 
 function renderWatchPage() {
-  if (accountLoading) return '<div class="page-heading"><h1 tabindex="-1">관심 부동산</h1><p role="status">관심 목록을 확인하고 있어요.</p></div>';
+  if (accountLoading) return `<div class="page-heading"><h1 tabindex="-1">관심 부동산</h1><p role="status">관심 목록을 불러오고 있어요.</p></div>${renderSkeletonCards(3)}`;
   const watched = activeWatches().map((id) => targets.find((target) => target.id === id)).filter(Boolean);
   const data = registryState();
   const withDoc = watched.filter((target) => documentsFor(data, target.id).length > 0).length;
@@ -540,7 +577,7 @@ function renderWatchPage() {
 }
 
 function renderAlertsPage() {
-  if (accountLoading) return '<div class="page-heading"><h1 tabindex="-1">알림</h1></div><section class="empty-state"><h2>받은 알림이 없어요</h2><p>계정을 확인하고 있어요.</p></section>';
+  if (accountLoading) return `<div class="page-heading"><h1 tabindex="-1">알림</h1><p role="status">알림을 불러오고 있어요.</p></div>${renderSkeletonCards(2)}`;
   const allAlerts = state.notifications.filter((notification) => notification.userId === activeUserId());
   const unreadCount = allAlerts.filter((item) => !item.read).length;
   const alerts = alertFilter === 'unread' ? allAlerts.filter((item) => !item.read) : allAlerts;
@@ -567,7 +604,7 @@ function renderAlertsPage() {
 
 function renderProfilePage() {
   const heading = '<div class="page-heading"><h1 tabindex="-1">내 정보</h1></div>';
-  if (accountLoading) return `${heading}<p role="status">로그인 상태를 확인하고 있어요.</p>`;
+  if (accountLoading) return `${heading}${renderSkeletonCards(3)}`;
 
   const submissions = state.submissions.filter((submission) => submission.userId === activeUserId());
   const unreadAlerts = state.notifications.filter((item) => item.userId === activeUserId() && !item.read).length;
@@ -703,121 +740,124 @@ const userIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" st
 function renderGuidePage() {
   return `<section class="guide-hero">
       <div class="guide-hero-copy">
-        <span class="auth-pill">등기로 MVP · 데모 안내</span>
-        <h1 tabindex="-1">지도에서 등기를 찾고,<br>변동까지 한눈에 확인하는 서비스</h1>
-        <p>등기로는 부동산 위치와 실제 등기 대상(동·호수)을 명확히 구분해 연결하고, 회원이 확보한 등기 자료를 허용 범위 내에서 공유하며, 관심 부동산의 등기변동을 알려 주는 웹 서비스입니다.</p>
+        <span class="auth-pill">등기로 서비스 가이드</span>
+        <h1 tabindex="-1">지도에서 등기를 찾고,<br>변동까지 놓치지 않는 부동산 등기 허브</h1>
+        <p>등기로는 주소·건물 위치와 실제 등기 대상(동·호수)을 명확히 연결하고, 회원이 확보한 등기 자료를 기준 시점과 함께 공유하며, 관심 부동산의 등기변동을 알려 주는 웹 서비스입니다.</p>
         <div class="button-row">
-          ${button('지도에서 바로 둘러보기', 'page', { id: 'map', kind: 'primary' })}
+          ${button('지도에서 시작하기', 'page', { id: 'map', kind: 'primary' })}
+          ${button('간편 검색 열기', 'page', { id: 'search', kind: 'secondary' })}
           ${account ? button('내 정보 · 변동 확인', 'page', { id: 'profile', kind: 'secondary' }) : button('로그인 / 회원가입', 'page', { id: 'login', kind: 'secondary' })}
         </div>
       </div>
     </section>
 
     <section class="guide-section">
-      <div class="guide-section-head"><h2>왜 만들었나요?</h2><p>기존 부동산 등기 확인 과정에서 반복되는 3가지 불편을 해결하기 위해 설계했습니다.</p></div>
+      <div class="guide-section-head"><h2>왜 만들었나요?</h2><p>부동산 등기를 확인할 때 반복되는 세 가지 문제를 해결하는 데 집중했습니다.</p></div>
       <div class="guide-grid-3">
         <article class="guide-card">
           <span class="guide-num">01</span>
-          <h3>위치와 등기 대상의 혼동</h3>
-          <p>같은 주소·건물 안에서도 토지, 건물, 집합건물 각 동·호수는 서로 다른 등기 대상입니다. 지도 위치와 개별 등기 대상을 분리해 잘못된 호수 연결을 막습니다.</p>
+          <h3>위치와 등기 대상의 분리</h3>
+          <p>같은 주소라도 토지·건물·집합건물 각 호수는 서로 다른 등기 대상입니다. 위치 선택과 개별 등기 대상을 분리해 잘못된 호수 연결을 막습니다.</p>
         </article>
         <article class="guide-card">
           <span class="guide-num">02</span>
-          <h3>자료 기준 시점의 불투명성</h3>
-          <p>공유된 등기 정보는 발급 시각과 서비스 등록 시각, 외부 변동 확인 시각을 분리해 표시합니다. 등기 완료가 감지되면 <strong>문서 갱신 필요</strong>를 안내합니다.</p>
+          <h3>투명한 기준 시점 표시</h3>
+          <p>문서 발급 시각, 서비스 등록 시각, 변동 확인 시각을 구분해 표기합니다. 등기 완료가 감지되면 <strong>문서 갱신 필요</strong> 배지로 최신화 필요를 알립니다.</p>
         </article>
         <article class="guide-card">
           <span class="guide-num">03</span>
-          <h3>등기변동 사후 인지 위험</h3>
-          <p>계약 이후 근저당 설정이나 소유권 이전이 접수되어도 매번 열람하지 않으면 알기 어렵습니다. 관심 등록한 대상의 신청 접수·등기 완료를 구분해 알립니다.</p>
+          <h3>등기변동 선제 감지</h3>
+          <p>관심 등록한 부동산의 등기신청 접수와 등기 완료를 구분해 알립니다. 조회 실패 시에도 마지막 정상 확인 시각을 보존해 오인을 방지합니다.</p>
         </article>
       </div>
     </section>
 
     <section class="guide-section">
-      <div class="guide-section-head"><h2>주요 기능 구성</h2><p>데모에서 직접 확인할 수 있는 핵심 기능 4가지입니다.</p></div>
+      <div class="guide-section-head"><h2>주요 기능</h2><p>현재 서비스에서 바로 체험할 수 있는 핵심 기능 6가지입니다.</p></div>
       <div class="guide-grid-2">
         <article class="guide-card">
-          <div class="section-title"><h3>지도 탐색 · 접이식 좌측 패널</h3>${badge('지도 UX', 'info')}</div>
-          <p>첫 화면은 지도를 넓게 보여 주며 플로팅 검색창과 <strong>인기 주소 칩</strong>으로 빠르게 이동할 수 있습니다. 네이버 지도처럼 좌측 손잡이로 패널을 접고 펼 수 있고, 유형 필터(집합건물·건물·토지·공유 있음)와 단축키(<code>/</code> 검색, <code>Esc</code> 닫기)를 지원합니다.</p>
+          <div class="section-title"><h3>지도 검색 · 간편 검색 전환</h3>${badge('탐색 UX', 'info')}</div>
+          <p>화면 상단 전환 버튼으로 <strong>지도 검색</strong>(네이버 지도형 접이식 패널, 위성·지적편집도, 유형 필터)과 <strong>간편 검색</strong>(구글형 검색창·실시간 추천 검색어)을 자유롭게 오갈 수 있습니다.</p>
         </article>
         <article class="guide-card">
-          <div class="section-title"><h3>등기 요약 보기 · 타임라인 이력</h3>${badge('정보 구조', 'info')}</div>
-          <p>표제부(면적·구조), 갑구(소유권·원인), 을구(근저당권 채권최고액 한글 표기)를 카드로 요약합니다. <strong>이력 보기</strong>에서는 발급 시각순 문서 버전과 신청 접수·완료 변동 이력을 타임라인으로 비교할 수 있습니다.</p>
+          <div class="section-title"><h3>전국 실주소 건축물대장 조회</h3>${badge('공공 실데이터', 'success')}</div>
+          <p>검증용 50곳 외에도 전국 어떤 주소를 검색하든 국토교통부 건축HUB API를 통해 실제 <strong>표제부(용도·구조·연면적·층수·사용승인일)</strong>와 집합건물 <strong>전유부 동·호수</strong>를 조회합니다.</p>
         </article>
         <article class="guide-card">
-          <div class="section-title"><h3>등기 자료 등록 · 자동 검증</h3>${badge('자료 공유', 'success')}</div>
-          <p>PDF·PNG 파일을 드래그 앤 드롭으로 올리면 브라우저에서 SHA-256 해시로 예시 문서를 식별합니다. 대상 불일치, 식별 불가, 검수 보류, 중복 제출, 이전 버전 제출을 각각 구분해 처리합니다.</p>
+          <div class="section-title"><h3>등기 요약 · 타임라인 · 실무 도구</h3>${badge('권리 확인', 'info')}</div>
+          <p>표제부·갑구·을구를 카드로 요약하고 채권최고액을 한글(<code>1억 2,500만원</code>)로 표기합니다. <strong>㎡ ↔ 평 전환</strong>, 원클릭 <strong>주소 복사</strong>, <strong>타임라인 이력</strong>을 지원합니다.</p>
         </article>
         <article class="guide-card">
-          <div class="section-title"><h3>회원 계정 · 모의 변동 알림</h3>${badge('모니터링', 'warning')}</div>
-          <p>로그인한 계정의 관심 부동산은 로컬 SQLite DB에 영속 저장됩니다. 내 정보에서 6단계 모의 변동 확인(미감지→접수→완료→재수신→실패→지연 응답)을 실행해 알림 생성과 마지막 확인 시각 보존을 검증할 수 있습니다.</p>
+          <div class="section-title"><h3>등기 파일 자동 파싱 · 등록</h3>${badge('자동 매칭', 'success')}</div>
+          <p>우측 하단 <strong>등기 자동 등록</strong> 버튼을 누르면 주소를 먼저 찾지 않아도 PDF·PNG 파일을 파싱해 해당 등기 대상과 권리관계를 자동 매칭·등록합니다.</p>
+        </article>
+        <article class="guide-card">
+          <div class="section-title"><h3>관심 부동산 · 등기변동 알림</h3>${badge('모니터링', 'warning')}</div>
+          <p>관심 부동산을 계정별로 영속 저장하고, 6단계 모의 변동 회차(미감지→접수→완료→재수신→실패→지연 응답)와 알림 안 읽음 필터·모두 읽음 처리를 제공합니다.</p>
+        </article>
+        <article class="guide-card">
+          <div class="section-title"><h3>회원 인증 · 소셜 로그인 · 격리 보관</h3>${badge('Supabase', 'info')}</div>
+          <p>Supabase Auth 기반 이메일 및 <strong>카카오·Google 로그인</strong>을 지원하며, 업로드한 원본 파일은 Private Storage 버킷에 격리 보관해 공유 데이터와 분리합니다.</p>
         </article>
       </div>
     </section>
 
     <section class="guide-section">
-      <div class="guide-section-head"><h2>데모 시연 추천 순서 (5분 흐름)</h2><p>발표나 테스트 시 아래 순서대로 눌러 보면서 설명하면 전체 기능을 자연스럽게 보여 줄 수 있습니다.</p></div>
+      <div class="guide-section-head"><h2>4단계 빠른 체험 가이드</h2><p>아래 순서대로 눌러 보시면 핵심 흐름을 3분 안에 모두 확인할 수 있습니다.</p></div>
       <ol class="guide-steps">
         <li class="guide-step">
-          <span class="guide-step-badge">STEP 1</span>
+          <span class="guide-step-badge">STEP 01</span>
           <div class="guide-step-body">
-            <h3>지도 탐색과 좌측 패널 전환</h3>
-            <p>비로그인 상태에서 인기 주소 칩(<strong>서울시청</strong>, <strong>서울역</strong>, <strong>명동성당</strong>)을 누르거나 검색창에 주소·건물명을 입력합니다. 좌측 손잡이로 패널을 접어 지도를 넓게 보거나 다시 펼쳐 보세요.</p>
-            <div class="button-row">${button('서울시청 201호 열기', 'open-target', { id: 'sample-unit-101', kind: 'secondary' })}${button('서울역 오피스텔 열기', 'open-target', { id: 'sample-officetel-301', kind: 'quiet' })}</div>
+            <h3>지도 · 간편 검색과 실무 도구 체험</h3>
+            <p>상단 토글로 <strong>지도 검색</strong>과 <strong>간편 검색</strong>을 전환해 보세요. 지도 우측의 <strong>위성·지적</strong> 토글, 좌측 패널 접기/펼치기, 상세 화면의 <strong>주소 복사 · 평수 전환</strong>을 확인할 수 있습니다.</p>
+            <div class="button-row">${button('서울시청 201호 열기', 'open-target', { id: 'sample-unit-101', kind: 'secondary' })}${button('강남역 오피스텔 열기', 'open-target', { id: 'sample-gangnam-stn', kind: 'quiet' })}</div>
           </div>
         </li>
         <li class="guide-step">
-          <span class="guide-step-badge">STEP 2</span>
+          <span class="guide-step-badge">STEP 02</span>
           <div class="guide-step-body">
-            <h3>로그인 게이트와 회원가입</h3>
-            <p>비로그인 상태에서는 상단에 <strong>지도 탐색 · 이용 가이드 · 로그인</strong>만 보입니다. 상세 패널에서 <strong>관심 등록</strong>이나 <strong>등기 자료 등록</strong>을 누르면 로그인 페이지로 안내되며, 가입·로그인 후 원래 보던 등기 대상으로 자동 복귀합니다.</p>
-            <div class="button-row">${account ? badge(`현재 ${account.email} 로그인됨`, 'success') : button('회원가입 페이지 열기', 'page', { id: 'register', kind: 'secondary' })}</div>
+            <h3>로그인 게이트와 계정 연동</h3>
+            <p>비로그인 상태에서도 지도와 공유 등기 요약을 자유롭게 둘러볼 수 있습니다. <strong>관심 등록</strong>이나 <strong>등기 자동 등록</strong>을 누르면 로그인 화면으로 안내되며, 로그인 후 원래 작업으로 자동 복귀합니다.</p>
+            <div class="button-row">${account ? badge(`${account.email} 로그인됨`, 'success') : button('로그인 / 회원가입', 'page', { id: 'login', kind: 'secondary' })}</div>
           </div>
         </li>
         <li class="guide-step">
-          <span class="guide-step-badge">STEP 3</span>
+          <span class="guide-step-badge">STEP 03</span>
           <div class="guide-step-body">
-            <h3>등기 요약 모달과 이력 타임라인</h3>
-            <p><strong>가상 101동 201호</strong>에서 <strong>등기 상세 보기</strong>를 눌러 표제부·갑구·을구 카드(근저당권 <code>1억 2,500만원</code>)를 확인하고, <strong>이력 보기</strong>로 문서 버전과 변동 타임라인을 보여 줍니다.</p>
+            <h3>등기 파일 자동 파싱 · 검수 확인</h3>
+            <p>우측 하단 <strong>등기 자동 등록</strong>에서 예시 파일(202호 PNG, 검수 보류 PDF, 식별 불가 PNG)을 올려 자동 매칭·검수 보류·식별 불가 분기를 확인해 보세요.</p>
+            <div class="button-row">${button('등기 자동 등록 열기', 'auto-upload', { kind: 'secondary' })}${button('서울시청 202호 열기', 'open-target', { id: 'sample-unit-102', kind: 'quiet' })}</div>
           </div>
         </li>
         <li class="guide-step">
-          <span class="guide-step-badge">STEP 4</span>
+          <span class="guide-step-badge">STEP 04</span>
           <div class="guide-step-body">
-            <h3>예시 파일 업로드로 정상·예외 검수 시연</h3>
-            <p>자료가 비어 있는 <strong>가상 101동 202호</strong>에서 <strong>등기 자료 등록</strong>을 열고, 201호 PDF(대상 불일치), 202호 검수 보류 PDF(검수 보류), 202호 기본 PNG(정상 공유)를 차례로 올려 검증 동작을 확인합니다.</p>
-            <div class="button-row">${button('서울시청 202호 열기', 'open-target', { id: 'sample-unit-102', kind: 'secondary' })}</div>
-          </div>
-        </li>
-        <li class="guide-step">
-          <span class="guide-step-badge">STEP 5</span>
-          <div class="guide-step-body">
-            <h3>관심 등록 → 6단계 모의 변동 확인 → 갱신 해소</h3>
-            <p>201호를 <strong>관심 등록</strong>한 뒤 <strong>내 정보</strong>에서 <strong>변동 확인 실행</strong>을 차례로 누릅니다. 신청 접수·등기 완료 알림과 조회 실패 시 마지막 성공 시각 보존을 확인하고, <strong>201호 완료 반영 자료 PDF</strong>를 등록해 <strong>문서 갱신 필요</strong> 배지가 해소되는 것까지 시연합니다.</p>
-            ${account ? `<div class="button-row">${button('내 정보로 이동', 'page', { id: 'profile', kind: 'secondary' })}${button('알림 확인', 'page', { id: 'alerts', kind: 'quiet' })}</div>` : ''}
+            <h3>변동 확인 실행과 문서 갱신 해소</h3>
+            <p>201호를 <strong>관심 등록</strong>한 뒤 <strong>내 정보</strong>에서 6단계 <strong>변동 확인 실행</strong>을 차례로 눌러 접수·완료 알림과 조회 실패 시 마지막 확인 시각 보존을 확인하고, 완료 반영 PDF로 <strong>문서 갱신 필요</strong>를 해소해 보세요.</p>
+            ${account ? `<div class="button-row">${button('내 정보로 이동', 'page', { id: 'profile', kind: 'secondary' })}${button('알림 보기', 'page', { id: 'alerts', kind: 'quiet' })}</div>` : ''}
           </div>
         </li>
       </ol>
     </section>
 
     <section class="guide-section">
-      <div class="guide-section-head"><h2>현재 MVP 구현 범위</h2><p>실제로 동작하는 연동 범위와 데모용 모의 범위를 투명하게 구분합니다.</p></div>
+      <div class="guide-section-head"><h2>현재 연동 범위</h2><p>실제 서비스 연동 영역과 모의 검증 영역을 투명하게 구분해 운영합니다.</p></div>
       <div class="guide-grid-2">
         <article class="guide-card">
-          <div class="section-title"><h3>실제 동작 영역</h3>${badge('Real', 'success')}</div>
+          <div class="section-title"><h3>실제 연동 완료</h3>${badge('Live', 'success')}</div>
           <ul class="guide-list">
-            <li>카카오맵 JavaScript SDK 지도 표시 및 주소·키워드 검색</li>
-            <li>SQLite 기반 회원가입·로그인·세션 쿠키·계정별 관심 목록 영속 저장</li>
-            <li>브라우저 SHA-256 해시 기반 예시 PDF/PNG 파일 검증</li>
+            <li>카카오맵 JavaScript SDK (실지도, 주소·키워드 검색, 위성·지적편집도)</li>
+            <li>국토교통부 건축HUB 건축물대장 공공 API (전국 표제부·전유부 실데이터)</li>
+            <li>Supabase Auth(이메일·카카오·Google), PostgreSQL RLS, Private Storage</li>
+            <li>브라우저 SHA-256 해시 기반 문서 식별 및 검증 흐름</li>
           </ul>
         </article>
         <article class="guide-card">
-          <div class="section-title"><h3>모의 검증 영역</h3>${badge('Mock / 준비 중', 'neutral')}</div>
+          <div class="section-title"><h3>모의 검증 · 확장 예정</h3>${badge('Roadmap', 'neutral')}</div>
           <ul class="guide-list">
             <li>서울 전역 50곳에 연결된 가상 등기 대상 ${targets.length}건 및 샘플 문서 ${samples.length}종</li>
-            <li>6단계 수동 회차 기반 모의 등기변동 확인 및 앱 내 알림</li>
-            <li>카카오·Google 소셜 OAuth 로그인 및 외부 등기 API 공급처 연동</li>
+            <li>6단계 수동 회차 기반 모의 등기변동 확인 및 서비스 내 알림</li>
+            <li>민간 등기 API(고유번호 조회·변동 웹훅) 및 카카오 알림톡 발송 연동</li>
           </ul>
         </article>
       </div>
@@ -851,7 +891,7 @@ function renderAuthPage(mode) {
   </aside>`;
 
   if (accountLoading) {
-    return `<div class="auth-shell">${brandPanel}<section class="auth-panel"><div class="auth-card-head"><h1 tabindex="-1">${title}</h1><p class="muted" role="status">로그인 상태를 확인하고 있어요.</p></div></section></div>`;
+    return `<div class="auth-shell">${brandPanel}<section class="auth-panel"><div class="auth-card-head"><h1 tabindex="-1">${title}</h1><p class="muted" role="status">계정 상태를 확인하고 있어요.</p></div>${renderSkeletonCards(1)}</section></div>`;
   }
   if (account) {
     return `<div class="auth-shell">${brandPanel}<section class="auth-panel"><div class="auth-card-head"><h1 tabindex="-1">이미 로그인되어 있어요</h1><p class="muted"><strong>${escape(account.email)}</strong> 계정으로 이용 중입니다.</p></div>
@@ -1021,7 +1061,10 @@ async function submitAuth(form) {
   }
   accountPending = true;
   submit.disabled = true;
+  const originalLabel = submit.textContent;
+  submit.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${mode === 'register' ? '계정 생성 중...' : '로그인 중...'}</span>`;
   feedback.hidden = true;
+  pulseProgress(0);
   try {
     const authResult = mode === 'register'
       ? await supabase.auth.signUp({ email: String(email).trim(), password: String(password) })
@@ -1060,8 +1103,10 @@ async function submitAuth(form) {
     feedback.textContent = error.status ? error.message : '인증 요청을 처리하지 못했어요. 잠시 뒤 다시 시도해 주세요.';
     feedback.hidden = false;
   } finally {
+    finishProgress();
     accountPending = false;
     submit.disabled = false;
+    submit.textContent = originalLabel;
   }
 }
 
@@ -1069,6 +1114,9 @@ async function logout(control) {
   if (accountPending) return;
   accountPending = true;
   control.disabled = true;
+  const originalLabel = control.textContent;
+  control.innerHTML = '<span class="spinner spinner-dark" aria-hidden="true"></span><span>로그아웃 중...</span>';
+  pulseProgress(0);
   try {
     if (supabase) await supabase.auth.signOut();
     updateAccount({ user: null, watchlist: [] });
@@ -1078,8 +1126,10 @@ async function logout(control) {
   } catch {
     notify('로그아웃하지 못했어요. 다시 시도해 주세요.');
   } finally {
+    finishProgress();
     accountPending = false;
     control.disabled = false;
+    control.textContent = originalLabel;
   }
 }
 
@@ -1600,14 +1650,23 @@ function changePage(value, { push = true } = {}) {
     return;
   }
   if (value === 'map') authRedirect = null;
+  const changed = page !== value;
   page = value;
   const targetPath = page === 'login' ? '/login' : page === 'register' ? '/register' : page === 'guide' ? '/guide' : page === 'search' ? '/search' : '/';
   if (push && window.location.pathname !== targetPath) {
     window.history.pushState({ page }, '', targetPath);
   }
+  if (changed) pulseProgress(280);
   render();
-  if (page === 'map') refreshPins();
-  else subPage.querySelector('h1')?.focus({ preventScroll: true });
+  if (page === 'map') {
+    mapPage.classList.remove('is-entering');
+    void mapPage.offsetWidth;
+    mapPage.classList.add('is-entering');
+    refreshPins();
+  } else {
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    subPage.querySelector('h1')?.focus({ preventScroll: true });
+  }
 }
 
 window.addEventListener('popstate', () => {
@@ -1945,13 +2004,22 @@ document.addEventListener('click', (event) => {
         notify('Supabase 설정이 필요해요.');
         break;
       }
+      control.disabled = true;
+      const originalHtml = control.innerHTML;
+      control.innerHTML = `<span class="spinner spinner-dark" aria-hidden="true"></span><span>${providerLabel}로 이동 중...</span>`;
+      pulseProgress(0);
       void supabase.auth.signInWithOAuth({
         provider: id,
         options: { redirectTo: `${window.location.origin}/auth/callback` },
       }).then(({ error }) => {
-        if (error && feedback) {
-          feedback.textContent = `${providerLabel} 로그인 연결에 실패했어요. Supabase Auth 설정을 확인해 주세요.`;
-          feedback.hidden = false;
+        if (error) {
+          finishProgress();
+          control.disabled = false;
+          control.innerHTML = originalHtml;
+          if (feedback) {
+            feedback.textContent = `${providerLabel} 로그인 연결에 실패했어요. Supabase Auth 설정을 확인해 주세요.`;
+            feedback.hidden = false;
+          }
         }
       });
       break;
@@ -2037,6 +2105,7 @@ return () => {
   abortController.abort();
   panelResizeObserver?.disconnect();
   clearTimeout(toastTimer);
+  clearTimeout(progressTimer);
   clearTimeout(suggestTimer);
   clearTimeout(modeSuggestTimer);
 };
