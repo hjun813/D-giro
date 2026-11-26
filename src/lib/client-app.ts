@@ -125,6 +125,46 @@ let mapStatus = 'connecting';
 let ledgerConfigured = false;
 let ledgerState = null;
 let ledgerSequence = 0;
+let dbDocuments = [];
+
+function normalizeDbDoc(row) {
+  return {
+    id: row.id,
+    sampleId: `db:${row.id}`,
+    targetId: row.property_id,
+    name: '공유 등기부등본 (실데이터)',
+    format: 'PDF',
+    issuedAt: row.issued_at || row.created_at,
+    registeredAt: row.created_at,
+    owner: row.owner_masked || '소유자 미확인',
+    ownershipCause: row.ownership_cause || '',
+    amount: row.mortgage_amount === null || row.mortgage_amount === undefined ? null : Number(row.mortgage_amount),
+    creditor: row.creditor || '',
+    rank: row.rank_label || '',
+    reflectedEvent: row.reflected_event_id || null,
+    isRealDb: true,
+  };
+}
+
+function allDocumentsFor(targetId) {
+  const localDocs = documentsFor(registryState(), targetId);
+  const remoteDocs = dbDocuments.filter((doc) => doc.targetId === targetId);
+  return [...remoteDocs, ...localDocs].sort((a, b) => String(b.issuedAt || '').localeCompare(String(a.issuedAt || '')));
+}
+
+async function loadDbDocuments() {
+  try {
+    const res = await fetch('/api/documents');
+    if (!res.ok) return;
+    const payload = await res.json();
+    if (!Array.isArray(payload.documents)) return;
+    dbDocuments = payload.documents.map(normalizeDbDoc);
+    render();
+    refreshPins();
+  } catch {
+    // Keep local demo documents when DB is unreachable.
+  }
+}
 
 const statusLabels = {
   published: ['공유 완료', 'success'], duplicate: ['이미 공유된 자료', 'info'], mismatch: ['등기 대상 불일치', 'warning'],
@@ -283,7 +323,7 @@ function refreshPins() {
 
 function locationSummary(locationId) {
   const matching = targets.filter((target) => target.locationId === locationId);
-  const sharedCount = matching.filter((target) => documentsFor(registryState(), target.id).length > 0).length;
+  const sharedCount = matching.filter((target) => allDocumentsFor(target.id).length > 0).length;
   const types = [...new Set(matching.map((target) => target.type))];
   return { total: matching.length, sharedCount, types };
 }
@@ -342,7 +382,7 @@ function renderSearchResults() {
 
 function renderTargetDetail(target) {
   const data = registryState();
-  const documents = documentsFor(data, target.id);
+  const documents = allDocumentsFor(target.id);
   const latest = documents[0];
   const check = data.checks[target.id];
   const events = eventsFor(data, target.id);
@@ -353,7 +393,7 @@ function renderTargetDetail(target) {
     <section class="info-card">
       <div class="section-title">
         <h3>공유 등기 자료</h3>
-        ${needsUpdate(data, target.id) ? badge('문서 갱신 필요', 'warning') : latest ? badge(`버전 ${documents.length}건`, 'info') : badge('미등록', 'neutral')}
+        ${needsUpdate(data, target.id) ? badge('문서 갱신 필요', 'warning') : latest?.isRealDb ? badge('실데이터 (DB)', 'success') : latest ? badge(`버전 ${documents.length}건`, 'info') : badge('미등록', 'neutral')}
       </div>
       ${latest ? `<div class="doc-preview">
           ${target.areaText ? `<div class="doc-preview-row"><span>면적·구조</span><span class="area-inline"><strong>${escape(formatArea(target.areaText))}</strong><button type="button" class="unit-toggle" data-action="toggle-unit" aria-label="면적 단위 전환">${areaUnit === 'sqm' ? '평' : '㎡'}</button></span></div>` : ''}
@@ -1173,16 +1213,18 @@ async function changeWatch(id, control) {
 }
 
 function openDocument(id) {
-  const sample = samples.find((item) => item.id === id);
-  const target = targets.find((item) => item.id === sample?.targetId);
+  const dbDoc = id.startsWith('db:') ? dbDocuments.find((item) => item.sampleId === id) : null;
+  const sample = dbDoc ? null : samples.find((item) => item.id === id);
+  const targetIdForDoc = dbDoc ? dbDoc.targetId : sample?.targetId;
+  const target = targets.find((item) => item.id === targetIdForDoc) || (dbDoc ? { id: dbDoc.targetId, locationId: null, type: '집합건물', building: dbDoc.targetId, unit: '' } : null);
   if (!target) return;
-  const active = documentsFor(registryState(), target.id).find((item) => item.sampleId === id);
+  const active = dbDoc || allDocumentsFor(target.id).find((item) => item.sampleId === id);
   if (!active) return;
   openDocId = id;
   const location = locations.find((item) => item.id === target.locationId);
   showDialog('등기사항증명서 요약', `<div class="doc-banner">
       <div class="doc-banner-top">
-        ${badge(target.type, 'info')}${badge('검증용 가상 자료', 'neutral')}
+        ${badge(target.type, 'info')}${active.isRealDb ? badge('실제 공유 등기 (마스킹 완료)', 'success') : badge('검증용 가상 자료', 'neutral')}
       </div>
       <h3>${escape(targetLabel(target))}</h3>
       ${location ? `<p class="muted">${escape(location.name)} · ${escape(location.area)}</p>` : ''}
@@ -1196,22 +1238,22 @@ function openDocument(id) {
         <div class="section-title"><h3>표제부</h3><button type="button" class="unit-toggle" data-action="toggle-unit">${areaUnit === 'sqm' ? '평으로 보기' : '㎡로 보기'}</button></div>
         <p>${escape(target.type)} · ${escape(targetLabel(target))}</p>
         ${target.areaText || target.structure ? `<p class="doc-sub">${[formatArea(target.areaText), target.structure].filter(Boolean).map(escape).join(' · ')}</p>` : ''}
-        <p class="doc-sub">검증 식별번호 <code>${escape(target.id)}</code></p>
+        <p class="doc-sub">식별번호 <code>${escape(target.id)}</code></p>
       </section>
       <section class="doc-card">
-        <div class="section-title"><h3>갑구 · 소유권</h3>${badge('소유권 확인', 'info')}</div>
+        <div class="section-title"><h3>갑구 · 소유권</h3>${badge(active.isRealDb ? '자동 마스킹' : '소유권 확인', 'info')}</div>
         <p class="doc-highlight">${escape(active.owner)}</p>
         ${active.ownershipCause ? `<p class="doc-sub">등기원인 · ${escape(active.ownershipCause)}</p>` : ''}
       </section>
       <section class="doc-card">
         <div class="section-title"><h3>을구 · 소유권 외 권리</h3>${badge(active.amount === null ? '근저당 없음' : active.rank || '근저당권 설정', active.amount === null ? 'success' : 'warning')}</div>
         ${active.amount === null
-          ? '<p>이 샘플에는 표시할 근저당권 항목이 없어요.</p>'
+          ? '<p>표시할 근저당권 항목이 없어요.</p>'
           : `<p class="doc-amount">${formatKoreanAmount(active.amount)}</p>
              <p class="doc-sub">채권최고액 ${money.format(active.amount)}원${active.creditor ? ` · 근저당권자 ${escape(active.creditor)}` : ''}</p>`}
       </section>
     </div>
-    <div class="button-row doc-actions"><a class="button sample-link primary" href="/samples/${sampleFilename(sample)}" download>예시 원본 ${sample.format === 'PDF' ? 'PDF' : 'PNG'} 받기</a>${button('버전·변동 이력', 'history', { id: target.id, kind: 'secondary' })}</div>`);
+    <div class="button-row doc-actions">${sample ? `<a class="button sample-link primary" href="/samples/${sampleFilename(sample)}" download>예시 원본 ${sample.format === 'PDF' ? 'PDF' : 'PNG'} 받기</a>` : ''}${button('버전·변동 이력', 'history', { id: target.id, kind: 'secondary' })}</div>`);
 }
 
 function openHistory(id) {
@@ -1219,7 +1261,7 @@ function openHistory(id) {
   if (!target) return;
   const location = locations.find((item) => item.id === target.locationId);
   const data = registryState();
-  const documents = documentsFor(data, id);
+  const documents = allDocumentsFor(id);
   const events = [...eventsFor(data, id)].reverse();
   showDialog('등기 이력 타임라인', `<div class="doc-banner">
       <div class="doc-banner-top">${badge(target.type, 'info')}${badge('검증용 가상 자료', 'neutral')}</div>
@@ -1301,8 +1343,43 @@ async function previewAutoFile(file) {
 
   try {
     const result = await identifySampleFile(file, getSampleIndex);
+    if (!dialog.open || !zone.isConnected) {
+      finishProgress();
+      return;
+    }
+    if (result.error === 'unknown' && /\.pdf$/i.test(file.name)) {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/documents/parse', { method: 'POST', body: formData });
+      const payload = await res.json();
+      finishProgress();
+      if (!dialog.open || !zone.isConnected) return;
+      if (!res.ok) {
+        meta.textContent = `${(file.size / 1024).toFixed(1)} KB · 파싱 실패`;
+        feedback.dataset.tone = 'danger';
+        feedback.textContent = payload.message || 'PDF 파싱에 실패했어요.';
+        feedback.hidden = false;
+        return;
+      }
+      const p = payload.parsed;
+      autoParsed = { mode: 'real-pdf', file, parsed: p, fileSha256: payload.fileSha256 };
+      meta.textContent = `${(file.size / 1024).toFixed(1)} KB · 실제 PDF 파싱·마스킹 완료`;
+      preview.innerHTML = `<div class="section-title"><strong>${escape(p.address || p.buildingName || '실제 등기부등본')}</strong>${badge('실제 PDF 파싱', 'success')}</div>
+        <div class="doc-preview">
+          ${p.registryUniqueNo ? `<div class="doc-preview-row"><span>부동산 고유번호</span><strong><code>${escape(p.registryUniqueNo)}</code></strong></div>` : ''}
+          <div class="doc-preview-row"><span>유형 · 표시</span><strong>${escape(p.propertyType)} · ${escape([p.buildingName, p.unitName].filter(Boolean).join(' '))}</strong></div>
+          <div class="doc-preview-row"><span>소유권 (자동 마스킹)</span><strong>${escape(p.ownerMasked)}</strong></div>
+          <div class="doc-preview-row"><span>근저당 (을구)</span><strong class="${p.mortgageAmount === null ? 'is-clean' : 'is-debt'}">${p.mortgageAmount === null ? '표시 항목 없음' : formatKoreanAmount(p.mortgageAmount)}</strong></div>
+          ${p.issuedAt ? `<div class="doc-preview-row"><span>발급/열람 시각</span><strong>${formatTime(p.issuedAt)}</strong></div>` : ''}
+          ${p.riskFlags?.length ? `<div class="doc-preview-row"><span>주의 키워드</span><strong class="is-debt">${escape(p.riskFlags.join(', '))}</strong></div>` : ''}
+        </div>
+        <p class="muted">개인정보(주민번호·성명) ${p.maskedPiiCount}건 자동 마스킹 완료 · 원본은 Private Storage에 격리됩니다.</p>`;
+      submitBtn.textContent = 'Supabase DB에 영구 저장 및 공유';
+      submitBtn.disabled = false;
+      preview.hidden = false;
+      return;
+    }
     finishProgress();
-    if (!dialog.open || !zone.isConnected) return;
     if (result.error) {
       meta.textContent = `${(file.size / 1024).toFixed(1)} KB · 파싱 실패`;
       feedback.dataset.tone = 'danger';
@@ -1347,9 +1424,64 @@ async function previewAutoFile(file) {
   }
 }
 
-function submitAutoSample() {
-  if (!autoParsed?.sample) return;
+async function submitAutoSample() {
   const feedback = dialog.querySelector('.upload-feedback');
+  const submitBtn = dialog.querySelector('#auto-submit-btn');
+  if (autoParsed?.mode === 'real-pdf') {
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>Supabase에 저장 중...</span>';
+    }
+    pulseProgress(0);
+    try {
+      const formData = new FormData();
+      formData.append('file', autoParsed.file);
+      if (targetId) formData.append('propertyId', targetId);
+      if (selection?.name) formData.append('locationName', selection.name);
+      if (selection?.coordinates) {
+        formData.append('latitude', String(selection.coordinates[0]));
+        formData.append('longitude', String(selection.coordinates[1]));
+      }
+      const res = await fetch('/api/documents', { method: 'POST', body: formData });
+      const payload = await res.json();
+      if (!res.ok) {
+        if (feedback) {
+          feedback.dataset.tone = 'danger';
+          feedback.textContent = payload.message || '저장에 실패했어요.';
+          feedback.hidden = false;
+        }
+        return;
+      }
+      if (payload.status === 'duplicate') {
+        if (feedback) {
+          feedback.dataset.tone = 'info';
+          feedback.textContent = payload.message || '이미 공유된 동일한 등기 PDF 파일이에요.';
+          feedback.hidden = false;
+        }
+        return;
+      }
+      await loadDbDocuments();
+      dialog.close();
+      notify('실제 등기 PDF를 파싱·마스킹해 Supabase에 저장했어요.');
+      if (payload.propertyId && targets.some((t) => t.id === payload.propertyId)) {
+        openTarget(payload.propertyId);
+      }
+    } catch {
+      if (feedback) {
+        feedback.dataset.tone = 'danger';
+        feedback.textContent = '서버 연결에 실패했어요. 다시 시도해 주세요.';
+        feedback.hidden = false;
+      }
+    } finally {
+      finishProgress();
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Supabase DB에 영구 저장 및 공유';
+      }
+    }
+    return;
+  }
+  if (!autoParsed?.sample) return;
   const submission = autoSubmitSample(state, activeUserId(), autoParsed.sample.id);
   if (!submission) return;
   saveState(storage, state);
@@ -1446,6 +1578,33 @@ async function uploadSample(form) {
   try {
     const result = await identifySampleFile(file, getSampleIndex);
     if (!dialog.open || !form.isConnected) return;
+    if (result.error === 'unknown' && /\.pdf$/i.test(file.name)) {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (selectedTarget) formData.append('propertyId', selectedTarget);
+      if (selection?.name) formData.append('locationName', selection.name);
+      if (selection?.coordinates) {
+        formData.append('latitude', String(selection.coordinates[0]));
+        formData.append('longitude', String(selection.coordinates[1]));
+      }
+      const res = await fetch('/api/documents', { method: 'POST', body: formData });
+      const payload = await res.json();
+      if (!dialog.open || !form.isConnected) return;
+      if (!res.ok) {
+        feedback.dataset.tone = 'danger';
+        feedback.textContent = payload.message || 'PDF 등록에 실패했어요.';
+      } else if (payload.status === 'duplicate') {
+        feedback.dataset.tone = 'info';
+        feedback.textContent = payload.message || '이미 공유된 동일한 등기 PDF 파일이에요.';
+      } else {
+        await loadDbDocuments();
+        dialog.close();
+        notify('실제 등기 PDF를 파싱·마스킹해 Supabase에 등록했어요.');
+        return;
+      }
+      feedback.hidden = false;
+      return;
+    }
     if (result.error) {
       feedback.textContent = uploadErrors[result.error];
     } else {
@@ -1772,7 +1931,7 @@ document.addEventListener('submit', async (event) => {
   }
   if (event.target.id === 'auto-sample-form') {
     event.preventDefault();
-    submitAutoSample();
+    await submitAutoSample();
     return;
   }
   if (event.target.id === 'mode-search-form') {
@@ -2088,6 +2247,7 @@ document.addEventListener('click', (event) => {
 render();
 refreshPins();
 void refreshAccount();
+void loadDbDocuments();
 fetch('/api/building-ledger/status').then((res) => (res.ok ? res.json() : null)).then((info) => {
   if (!info) return;
   ledgerConfigured = Boolean(info.configured);
