@@ -1,4 +1,5 @@
-import { initialDocumentIds, rounds, samples, targets } from './fixtures.js';
+﻿// @ts-nocheck
+import { initialDocumentIds, rounds, samples, targets } from './fixtures.ts';
 
 const SNAPSHOT_VERSION = 2;
 const STORAGE_KEY = 'deunggiro-mvp-v1';

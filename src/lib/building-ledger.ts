@@ -2,7 +2,16 @@ const MOLIT_BASE_URL = 'https://apis.data.go.kr/1613000/BldRgstHubService';
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 200;
 
-export function parseParcelParams(searchParams) {
+export interface ParcelParams {
+  sigunguCd: string;
+  bjdongCd: string;
+  platGbCd: string;
+  bun: string;
+  ji: string;
+  pnu: string;
+}
+
+export function parseParcelParams(searchParams: URLSearchParams): ParcelParams | null {
   const sigunguCd = String(searchParams.get('sigunguCd') || '').trim();
   const bjdongCd = String(searchParams.get('bjdongCd') || '').trim();
   const platGbCd = String(searchParams.get('platGbCd') || '0').trim() || '0';
@@ -19,24 +28,24 @@ export function parseParcelParams(searchParams) {
   return { sigunguCd, bjdongCd, platGbCd, bun, ji, pnu };
 }
 
-function asArray(items) {
+function asArray(items: any): any[] {
   const raw = items?.item ?? items;
   if (!raw || raw === '') return [];
   return Array.isArray(raw) ? raw : [raw];
 }
 
-function toNumber(value) {
+function toNumber(value: unknown): number | null {
   const num = Number(value);
   return Number.isFinite(num) && num > 0 ? num : null;
 }
 
-function formatDate(value) {
+function formatDate(value: unknown): string {
   const digits = String(value || '').replace(/\D/g, '');
   if (digits.length !== 8) return '';
   return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
 }
 
-export function normalizeTitleItems(items) {
+export function normalizeTitleItems(items: any) {
   return asArray(items).map((item) => ({
     buildingName: String(item.bldNm || '').trim(),
     dongName: String(item.dongNm || '').trim(),
@@ -55,9 +64,16 @@ export function normalizeTitleItems(items) {
   }));
 }
 
-export function normalizeUnitItems(items) {
-  const units = [];
-  const seen = new Set();
+export function normalizeUnitItems(items: any) {
+  const units: Array<{
+    id: string;
+    dong: string;
+    ho: string;
+    exclusiveArea: number | null;
+    purpose: string;
+    structure: string;
+  }> = [];
+  const seen = new Set<string>();
   for (const item of asArray(items)) {
     const part = String(item.exposPubuseGbCdNm || '').trim();
     const kind = String(item.mainAtchGbCdNm || '').trim();
@@ -83,11 +99,19 @@ export function normalizeUnitItems(items) {
     a.ho.localeCompare(b.ho, 'ko', { numeric: true }));
 }
 
-export function createMolitLedgerProvider({ serviceKey = '', fetchImpl = fetch, timeoutMs = 8000 } = {}) {
+export function createMolitLedgerProvider({
+  serviceKey = '',
+  fetchImpl = fetch,
+  timeoutMs = 8000,
+}: {
+  serviceKey?: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+} = {}) {
   const key = String(serviceKey || '').trim();
-  const cache = new Map();
+  const cache = new Map<string, { expiresAt: number; data: any }>();
 
-  async function callOperation(operation, parcel, numOfRows) {
+  async function callOperation(operation: string, parcel: ParcelParams, numOfRows: number) {
     const query = new URLSearchParams({
       serviceKey: key,
       sigunguCd: parcel.sigunguCd,
@@ -107,14 +131,14 @@ export function createMolitLedgerProvider({ serviceKey = '', fetchImpl = fetch, 
         headers: { Accept: 'application/json' },
       });
       if (!response.ok) {
-        const error = new Error(`MOLIT API HTTP ${response.status}`);
+        const error: any = new Error(`MOLIT API HTTP ${response.status}`);
         error.code = 'UPSTREAM_HTTP';
         throw error;
       }
       const payload = await response.json();
       const resultCode = payload?.response?.header?.resultCode;
       if (resultCode && resultCode !== '00') {
-        const error = new Error(payload?.response?.header?.resultMsg || `MOLIT API error ${resultCode}`);
+        const error: any = new Error(payload?.response?.header?.resultMsg || `MOLIT API error ${resultCode}`);
         error.code = 'UPSTREAM_RESULT';
         throw error;
       }
@@ -127,7 +151,7 @@ export function createMolitLedgerProvider({ serviceKey = '', fetchImpl = fetch, 
   return {
     name: 'molit-building-ledger',
     configured: Boolean(key),
-    async lookup(parcel) {
+    async lookup(parcel: ParcelParams) {
       if (!key) return { status: 'unconfigured', provider: 'molit-building-ledger' };
       const cached = cache.get(parcel.pnu);
       if (cached && cached.expiresAt > Date.now()) {
@@ -148,58 +172,22 @@ export function createMolitLedgerProvider({ serviceKey = '', fetchImpl = fetch, 
         titles,
         units,
       };
-      if (cache.size >= MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
+      if (cache.size >= MAX_CACHE_ENTRIES) {
+        const firstKey = cache.keys().next().value;
+        if (firstKey) cache.delete(firstKey);
+      }
       cache.set(parcel.pnu, { expiresAt: Date.now() + CACHE_TTL_MS, data });
       return { ...data, cached: false };
     },
   };
 }
 
-function sendJson(response, status, data) {
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-  response.end(JSON.stringify(data));
-}
-
-export function createBuildingLedgerApi(provider) {
-  return async function buildingLedgerApi(request, response, path) {
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      response.writeHead(405, { Allow: 'GET, HEAD' }).end();
-      return;
-    }
-    if (path === '/api/building-ledger/status') {
-      return sendJson(response, 200, {
-        configured: provider.configured,
-        provider: provider.name,
-      });
-    }
-    if (path !== '/api/building-ledger') {
-      return sendJson(response, 404, { message: '요청한 기능을 찾을 수 없어요.' });
-    }
-    if (!provider.configured) {
-      return sendJson(response, 503, {
-        status: 'unconfigured',
-        provider: provider.name,
-        message: '공공데이터포털 건축물대장 인증키(DATA_GO_KR_SERVICE_KEY)가 설정되지 않았어요.',
-      });
-    }
-    const url = new URL(request.url, 'http://localhost');
-    const parcel = parseParcelParams(url.searchParams);
-    if (!parcel) {
-      return sendJson(response, 400, {
-        status: 'invalid',
-        message: '조회할 주소의 법정동코드와 지번(본번·부번)을 확인해 주세요.',
-      });
-    }
-    try {
-      const result = await provider.lookup(parcel);
-      return sendJson(response, 200, result);
-    } catch (error) {
-      console.error('Building ledger lookup failed:', error.code || error.name);
-      return sendJson(response, 502, {
-        status: 'error',
-        provider: provider.name,
-        message: '건축물대장 정보를 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.',
-      });
-    }
-  };
+let sharedProvider: ReturnType<typeof createMolitLedgerProvider> | null = null;
+export function getSharedLedgerProvider() {
+  if (!sharedProvider) {
+    sharedProvider = createMolitLedgerProvider({
+      serviceKey: process.env.DATA_GO_KR_SERVICE_KEY,
+    });
+  }
+  return sharedProvider;
 }

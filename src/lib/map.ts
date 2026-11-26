@@ -1,4 +1,5 @@
-import { locations } from './fixtures.js';
+﻿// @ts-nocheck
+import { locations } from './fixtures.ts';
 
 const defaultCenter = locations[0].coordinates;
 const normalize = (text) => String(text || '').toLowerCase().replace(/[\s.,·()]/g, '');
@@ -61,7 +62,7 @@ export function dedupeKakaoResults(rawResults) {
 }
 
 export async function connectKakaoMap(container, onSelect) {
-  const response = await fetch('/map-config.json');
+  const response = await fetch('/api/map-config');
   if (!response.ok) throw new Error('지도 설정을 불러오지 못했습니다.');
   const { javascriptKey } = await response.json();
   if (!javascriptKey) return null;

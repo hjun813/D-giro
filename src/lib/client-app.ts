@@ -1,7 +1,15 @@
-import { locations, rounds, sampleFilename, samples, targetLabel, targets, users } from './fixtures.js';
-import { autoSubmitSample, documentsFor, eventsFor, initialState, loadState, needsUpdate, runRound, saveState, submitSample, toggleWatch } from './model.js';
-import { connectKakaoMap, createDemoMap, demoSearch } from './map.js';
-import { identifySampleFile } from './uploads.js';
+// @ts-nocheck
+import { locations, rounds, sampleFilename, samples, targetLabel, targets, users } from './fixtures';
+import { autoSubmitSample, documentsFor, eventsFor, initialState, loadState, needsUpdate, runRound, saveState, submitSample, toggleWatch } from './model';
+import { connectKakaoMap, createDemoMap, demoSearch } from './map';
+import { identifySampleFile } from './uploads';
+import { getSupabaseBrowserClient } from './supabase/client';
+
+export function mountDeunggiroApp(initialPage = 'map') {
+  const abortController = new AbortController();
+  const { signal } = abortController;
+  const supabase = getSupabaseBrowserClient();
+  const supabaseConfigured = Boolean(supabase);
 
 const mapPage = document.querySelector('#map-page');
 const subPage = document.querySelector('#sub-page');
@@ -51,7 +59,7 @@ function pageFromPath(pathname = window.location.pathname) {
   return 'map';
 }
 
-let page = pageFromPath();
+let page = initialPage || pageFromPath();
 let authRedirect = null;
 let panelOpen = true;
 let listFilter = 'all';
@@ -589,6 +597,10 @@ function renderProfilePage() {
         <div class="section-title"><h2>외부 데이터 연결</h2>${badge(mapStatuses[mapStatus][0], mapStatus === 'live' ? 'success' : mapStatus === 'failed' ? 'warning' : 'neutral')}</div>
         <p class="muted">${escape(mapStatuses[mapStatus][1])}</p>
         <div class="ledger-status-row">
+          <span>Supabase (Auth · DB · Storage)</span>
+          ${badge(supabaseConfigured ? '연결됨' : '환경변수 미설정', supabaseConfigured ? 'success' : 'neutral')}
+        </div>
+        <div class="ledger-status-row">
           <span>공공 건축물대장 API</span>
           ${badge(ledgerConfigured ? '연결됨' : '인증키 미설정', ledgerConfigured ? 'success' : 'neutral')}
         </div>
@@ -1002,11 +1014,31 @@ async function submitAuth(form) {
     form.elements.passwordConfirm?.focus();
     return;
   }
+  if (!supabase) {
+    feedback.textContent = 'Supabase 환경변수(NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY)를 설정해 주세요.';
+    feedback.hidden = false;
+    return;
+  }
   accountPending = true;
   submit.disabled = true;
   feedback.hidden = true;
   try {
-    updateAccount(await accountRequest(`auth/${mode}`, 'POST', { email, password }));
+    const authResult = mode === 'register'
+      ? await supabase.auth.signUp({ email: String(email).trim(), password: String(password) })
+      : await supabase.auth.signInWithPassword({ email: String(email).trim(), password: String(password) });
+    if (authResult.error) {
+      feedback.textContent = authResult.error.message || '이메일 또는 비밀번호를 확인해 주세요.';
+      feedback.hidden = false;
+      return;
+    }
+    if (mode === 'register' && !authResult.data.session) {
+      feedback.dataset.tone = 'info';
+      feedback.textContent = '확인 이메일을 보냈어요. 메일함에서 인증 링크를 눌러 가입을 완료해 주세요.';
+      feedback.hidden = false;
+      return;
+    }
+    const sessionData = await accountRequest('session');
+    updateAccount(sessionData);
     accountPending = false;
     const redirect = authRedirect;
     authRedirect = null;
@@ -1025,7 +1057,7 @@ async function submitAuth(form) {
     refreshPins();
     notify(mode === 'register' ? '회원가입을 완료했어요.' : '로그인했어요.');
   } catch (error) {
-    feedback.textContent = error.status ? error.message : '서버에 연결하지 못했어요. 잠시 뒤 다시 시도해 주세요.';
+    feedback.textContent = error.status ? error.message : '인증 요청을 처리하지 못했어요. 잠시 뒤 다시 시도해 주세요.';
     feedback.hidden = false;
   } finally {
     accountPending = false;
@@ -1038,7 +1070,8 @@ async function logout(control) {
   accountPending = true;
   control.disabled = true;
   try {
-    updateAccount(await accountRequest('auth/logout', 'POST'));
+    if (supabase) await supabase.auth.signOut();
+    updateAccount({ user: null, watchlist: [] });
     accountPending = false;
     changePage('map');
     notify('로그아웃했어요.');
@@ -1316,11 +1349,22 @@ function openShare() {
 let sampleIndex;
 async function getSampleIndex() {
   if (!sampleIndex) {
-    const response = await fetch('/sample-index.json');
+    const response = await fetch('/api/sample-index');
     if (!response.ok) throw new Error('예시 파일 목록을 불러오지 못했습니다.');
     sampleIndex = await response.json();
   }
   return sampleIndex;
+}
+
+async function archiveOriginalToStorage(file, sampleId) {
+  if (!supabase || !account || !file) return;
+  try {
+    const ext = file.name.toLowerCase().endsWith('.png') ? 'png' : 'pdf';
+    const path = `${account.id}/${sampleId}-${Date.now()}.${ext}`;
+    await supabase.storage.from('registry-originals').upload(path, file, { upsert: false });
+  } catch {
+    // Non-blocking archival when storage bucket is not provisioned yet.
+  }
 }
 
 async function uploadSample(form) {
@@ -1347,6 +1391,7 @@ async function uploadSample(form) {
       if (!submission) throw new Error('검증용 파일을 확인하지 못했습니다.');
       saveState(storage, state);
       if (submission.status === 'published') {
+        void archiveOriginalToStorage(file, result.sampleId);
         dialog.close();
         render();
         refreshPins();
@@ -1393,20 +1438,20 @@ dialog.addEventListener('change', (event) => {
   } else if (event.target.id === 'auto-sample-file') {
     void previewAutoFile(event.target.files[0]);
   }
-});
+}, { signal });
 
 dialog.addEventListener('dragover', (event) => {
   const zone = event.target.closest('#sample-dropzone, #auto-dropzone');
   if (!zone) return;
   event.preventDefault();
   zone.classList.add('is-dragover');
-});
+}, { signal });
 
 dialog.addEventListener('dragleave', (event) => {
   const zone = event.target.closest('#sample-dropzone, #auto-dropzone');
   if (!zone || zone.contains(event.relatedTarget)) return;
   zone.classList.remove('is-dragover');
-});
+}, { signal });
 
 dialog.addEventListener('drop', (event) => {
   const zone = event.target.closest('#sample-dropzone, #auto-dropzone');
@@ -1426,7 +1471,7 @@ dialog.addEventListener('drop', (event) => {
     dialog.querySelector('.upload-feedback').hidden = true;
     updateDropzoneLabel(file);
   }
-});
+}, { signal });
 
 function closeSuggestions() {
   clearTimeout(suggestTimer);
@@ -1500,7 +1545,7 @@ searchInput.addEventListener('input', () => {
   const clearBtn = document.querySelector('#search-clear');
   if (clearBtn) clearBtn.hidden = !searchInput.value.trim();
   updateSuggestions(searchInput.value);
-});
+}, { signal });
 
 searchInput.addEventListener('keydown', (event) => {
   if (!suggestions.length) return;
@@ -1524,11 +1569,11 @@ searchInput.addEventListener('keydown', (event) => {
     event.preventDefault();
     closeSuggestions();
   }
-});
+}, { signal });
 
 document.addEventListener('click', (event) => {
   if (!event.target.closest('.floating-search')) closeSuggestions();
-});
+}, { signal });
 
 document.addEventListener('keydown', (event) => {
   if (dialog.open || page !== 'map') return;
@@ -1547,7 +1592,7 @@ document.addEventListener('keydown', (event) => {
       refreshPins();
     }
   }
-});
+}, { signal });
 
 function changePage(value, { push = true } = {}) {
   if (['watch', 'alerts', 'profile'].includes(value) && !account && !accountLoading) {
@@ -1567,7 +1612,7 @@ function changePage(value, { push = true } = {}) {
 
 window.addEventListener('popstate', () => {
   changePage(pageFromPath(), { push: false });
-});
+}, { signal });
 
 async function runModeSearch(raw) {
   const term = raw.trim();
@@ -1637,7 +1682,7 @@ document.addEventListener('input', (event) => {
       // Keep local suggestions.
     }
   }, 200);
-});
+}, { signal });
 
 document.addEventListener('submit', async (event) => {
   if (event.target.id === 'auth-form') {
@@ -1691,12 +1736,12 @@ document.addEventListener('submit', async (event) => {
   panel.querySelector('.panel-content').scrollTop = 0;
   refreshPins();
   map.showResults?.(results);
-});
+}, { signal });
 
 dialog.addEventListener('close', () => {
   openDocId = null;
   if (dialogTrigger?.isConnected) dialogTrigger.focus({ preventScroll: true });
-});
+}, { signal });
 
 document.addEventListener('click', (event) => {
   const control = event.target.closest('[data-action]');
@@ -1704,26 +1749,6 @@ document.addEventListener('click', (event) => {
   const { action, id } = control.dataset;
   switch (action) {
     case 'page': changePage(id); break;
-    case 'quick-location': {
-      const location = locations.find((item) => item.id === id);
-      if (location) selectLocation(location);
-      break;
-    }
-    case 'open-list':
-      searchTerm = '';
-      searchInput.value = '';
-      results = locations;
-      selection = null;
-      targetId = null;
-      panelOpen = true;
-      sheet = 'open';
-      renderPanel();
-      refreshPins();
-      break;
-    case 'clear-recent':
-      recentTargetIds = [];
-      renderRecentBar();
-      break;
     case 'auto-upload': openAutoUpload(); break;
     case 'mode-search-clear':
       modeSearchQuery = '';
@@ -1766,6 +1791,26 @@ document.addEventListener('click', (event) => {
       selectLocation(chosen);
       break;
     }
+    case 'quick-location': {
+      const location = locations.find((item) => item.id === id);
+      if (location) selectLocation(location);
+      break;
+    }
+    case 'open-list':
+      searchTerm = '';
+      searchInput.value = '';
+      results = locations;
+      selection = null;
+      targetId = null;
+      panelOpen = true;
+      sheet = 'open';
+      renderPanel();
+      refreshPins();
+      break;
+    case 'clear-recent':
+      recentTargetIds = [];
+      renderRecentBar();
+      break;
     case 'clear-search':
       searchInput.value = '';
       searchTerm = '';
@@ -1889,14 +1934,26 @@ document.addEventListener('click', (event) => {
     case 'share': openShare(); break;
     case 'auth': changePage(id); break;
     case 'social-auth': {
-      const provider = id === 'kakao' ? '카카오' : 'Google';
-      const notice = `${provider} 로그인은 OAuth 클라이언트 설정 후 사용할 수 있어요. 지금은 이메일로 계속해 주세요.`;
+      const providerLabel = id === 'kakao' ? '카카오' : 'Google';
       const feedback = document.querySelector('#social-feedback');
-      if (feedback) {
-        feedback.textContent = notice;
-        feedback.hidden = false;
+      if (!supabase) {
+        const notice = `${providerLabel} 로그인을 사용하려면 Supabase 환경변수(NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY)를 설정해 주세요.`;
+        if (feedback) {
+          feedback.textContent = notice;
+          feedback.hidden = false;
+        }
+        notify('Supabase 설정이 필요해요.');
+        break;
       }
-      notify(`${provider} OAuth 연동 준비 중이에요.`);
+      void supabase.auth.signInWithOAuth({
+        provider: id,
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
+      }).then(({ error }) => {
+        if (error && feedback) {
+          feedback.textContent = `${providerLabel} 로그인 연결에 실패했어요. Supabase Auth 설정을 확인해 주세요.`;
+          feedback.hidden = false;
+        }
+      });
       break;
     }
     case 'logout': void logout(control); break;
@@ -1936,7 +1993,7 @@ document.addEventListener('click', (event) => {
       notify('검증 데이터를 초기화했어요.');
       break;
   }
-});
+}, { signal });
 
 render();
 refreshPins();
@@ -1946,9 +2003,11 @@ fetch('/api/building-ledger/status').then((res) => (res.ok ? res.json() : null))
   ledgerConfigured = Boolean(info.configured);
   if (page === 'profile') render();
 }).catch(() => {});
-window.addEventListener('focus', refreshAccount);
+window.addEventListener('focus', refreshAccount, { signal });
 const liveContainer = document.querySelector('#map-live');
+let panelResizeObserver = null;
 connectKakaoMap(liveContainer, selectLocation).then((liveMap) => {
+  if (signal.aborted) return;
   mapStatus = liveMap ? 'live' : 'unconfigured';
   document.querySelector('#map-mode').textContent = mapStatuses[mapStatus][0];
   if (page === 'profile') render();
@@ -1957,17 +2016,28 @@ connectKakaoMap(liveContainer, selectLocation).then((liveMap) => {
   if (satelliteOn) map.setSatellite?.(true);
   if (cadastralOn) map.setCadastral?.(true);
   mapPage.dataset.mapMode = 'live';
-  new ResizeObserver(([entry]) => {
+  panelResizeObserver = new ResizeObserver(([entry]) => {
     mapPage.style.setProperty('--map-panel-inset', `${entry.borderBoxSize[0].blockSize}px`);
-  }).observe(panel);
+  });
+  panelResizeObserver.observe(panel);
   liveContainer.hidden = false;
   document.querySelector('#map-demo').hidden = true;
   document.querySelector('#map-caption').hidden = true;
   refreshPins();
   if (selection) map.select(selection);
 }).catch(() => {
+  if (signal.aborted) return;
   mapStatus = 'failed';
   liveContainer.hidden = true;
   document.querySelector('#map-mode').textContent = mapStatuses[mapStatus][0];
   if (page === 'profile') render();
 });
+
+return () => {
+  abortController.abort();
+  panelResizeObserver?.disconnect();
+  clearTimeout(toastTimer);
+  clearTimeout(suggestTimer);
+  clearTimeout(modeSuggestTimer);
+};
+}

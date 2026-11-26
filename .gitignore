@@ -1,4 +1,8 @@
-.env
-.env.*
-!.env.example
+node_modules/
+.next/
+out/
 .data/
+.env.local
+.env*.local
+*.tsbuildinfo
+next-env.d.ts

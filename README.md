@@ -1,49 +1,41 @@
-# 등기로 MVP
+# 등기로 (Next.js + Supabase)
 
-지도 검색, 가상 등기 자료 조회·공유, 관심 등록과 모의 변동 알림을 검증하는 로컬 웹 앱입니다. 등기 대상·문서·변동 사건은 검증용 가상 자료이며, 테스트 사용자별 상태는 브라우저에 저장됩니다.
+지도에서 개별 부동산의 등기 정보를 찾고, 회원이 확보한 등기 자료를 허용 범위에서 공유하며, 관심 부동산의 등기변동을 알리는 웹 서비스입니다. **Next.js (App Router) + Supabase (PostgreSQL · Auth · Storage)** 기반으로 구성되어 있으며 Vercel에 바로 배포할 수 있습니다.
 
-## 실행
-
-Node.js 22.13 이상에서 별도 패키지 설치 없이 시작할 수 있습니다.
-
-```powershell
-npm start
-```
-
-`http://localhost:4173/`에서 열립니다. 키 설정 전에는 검증용 지형과 위치 검색을 사용할 수 있습니다.
-
-### 카카오맵 연결
-
-개발자 앱에서 카카오맵을 활성화하고, JavaScript 키에 브라우저에서 접속할 개발 도메인을 등록합니다. 기본 실행 주소는 `http://localhost:4173`입니다. [.env.example](.env.example)을 `.env.local`로 복사해 JavaScript 키를 적고 서버를 다시 시작합니다. [카카오맵 이용 조건](https://developers.kakao.com/docs/ko/kakaomap/common) · [지도 Web API 가이드](https://apis.map.kakao.com/web/guide/)
+## 로컬 실행
 
 ```powershell
 Copy-Item .env.example .env.local
-# .env.local에서 KAKAO_MAP_JS_KEY 값을 입력합니다.
-npm start
+# .env.local에 카카오맵, Supabase, 공공데이터포털 키를 입력합니다.
+npm install
+npm run dev
 ```
 
-실제 지도가 열리면 지도와 `내 정보 > 지도 연결`에 `카카오맵 연결됨`이 표시됩니다. 같은 화면에서 키 미설정이나 연결 실패 상태도 확인할 수 있습니다. 실제 지도에서는 도로명·지번 및 건물명을 검색하고, 검증용 공개 장소에서 가상 등기 대상을 열 수 있습니다.
+`http://localhost:4173`에서 열립니다.
 
-## 회원 계정과 관심 목록
+## 환경변수 설정 (`.env.local` 및 Vercel)
 
-`내 정보 > 회원가입`에서 계정을 만들고 지도에서 예시 등기 대상을 관심 등록합니다. `관심 부동산`에서 등록·해제하며, 로그아웃 후 같은 계정으로 로그인해 목록을 불러올 수 있습니다. 서버는 계정·세션·관심 목록을 로컬 SQLite 파일 `.data/accounts.sqlite`에 저장합니다. Git에서 `.data/`를 제외합니다.
+| 변수명 | 용도 | 필수 여부 |
+| --- | --- | --- |
+| `NEXT_PUBLIC_KAKAO_MAP_JS_KEY` | 카카오맵 JavaScript SDK 지도·검색 (기존 `KAKAO_MAP_JS_KEY` 호환) | 실지도 사용 시 |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase 프로젝트 URL | 회원·관심목록 사용 시 |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase Anon Public Key | 회원·관심목록 사용 시 |
+| `DATA_GO_KR_SERVICE_KEY` | 공공데이터포털 국토교통부 건축HUB 건축물대장 인증키(Decoding) | 실주소 건축물대장 조회 시 |
 
-운영 공개 전에는 이메일 소유 확인과 비밀번호 재설정, HTTPS와 운영 DB 보관·복구 절차가 필요합니다. 운영용 DB로 옮길 때는 브라우저 검증 상태와 사용자 계정의 서버 데이터를 각각 취급합니다.
+## Supabase 초기 설정
 
-## 모의 등기 검증 흐름
+1. [Supabase](https://supabase.com)에서 새 프로젝트를 생성합니다.
+2. **SQL Editor**에서 [supabase/migrations/0001_initial_schema.sql](supabase/migrations/0001_initial_schema.sql)을 실행해 테이블(`properties`, `registry_documents`, `change_events`, `watchlists`, `notifications`), RLS 정책, Private Storage 버킷(`registry-originals`)을 생성합니다.
+3. **Authentication > Providers**에서 Email 및 필요 시 Kakao / Google OAuth를 활성화하고, Redirect URL에 `http://localhost:4173/auth/callback`과 Vercel 배포 도메인 `https://<도메인>/auth/callback`을 등록합니다.
 
-로그아웃 상태에서 테스트 사용자로 예시 업로드·이력·변동 알림을 확인합니다.
+## Vercel 배포
 
-1. `서울시청` 또는 `세종대로 110`을 검색합니다. `가상 101동 201호`와 `가상 101동 202호`의 자료를 각각 확인합니다.
-2. 202호에서 `등기 자료 공유 > 예시 파일 내려받기`를 엽니다. 받은 201호 PDF와 202호 PNG를 차례로 `검증용 파일`에 선택해 업로드하면 대상 불일치와 정상 공유를 확인할 수 있습니다. 앱에서 제공한 예시 파일을 브라우저에서 확인해 목 검수 결과를 기록합니다.
-3. 201호를 관심 등록한 뒤 `내 정보`에서 다른 테스트 사용자로 전환합니다. 같은 대상을 관심 등록하고 `변동 확인 실행`을 차례대로 누릅니다. 두 명이 관심 등록한 대상의 회차별 조회 횟수와 알림 건수를 볼 수 있습니다.
-4. 등기 완료 이후 201호의 `문서 갱신 필요`를 확인합니다. `201호 완료 반영 자료` PDF를 업로드하면 해당 표시가 해소됩니다.
-5. 상세의 `이력 보기`에서는 발급 시각순 문서 버전과 신청 접수·등기 완료 이력을, `내 정보 > 업로드 이력`에서는 현재 테스트 사용자의 제출 결과를 확인합니다. `검증 초기화`로 샘플 상태를 복원할 수 있습니다.
+1. GitHub 저장소를 Vercel에 연결합니다 (Framework Preset: `Next.js`).
+2. Project Settings > Environment Variables에 위 환경변수를 등록하고 배포합니다.
 
-예시 파일의 원본을 다시 만들려면 ReportLab, fontTools, Poppler와 한국어 TrueType 글꼴을 준비한 뒤 `python scripts/generate_samples.py`를 실행합니다. `SAMPLE_KOREAN_FONT`로 글꼴 경로를 지정할 수 있습니다.
+## 검증 명령
 
 ```powershell
 npm test
+npm run build
 ```
-
-구현 범위와 인수 기준은 [MVP 개발 계획서](docs/MVP_DEVELOPMENT_PLAN.md), 디자인과 운영 검토 문서는 [문서 안내](docs/README.md)를 참조하세요.

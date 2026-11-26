@@ -1,3 +1,4 @@
+﻿// @ts-nocheck
 export const users = [
   { id: 'user-a', name: '테스트 사용자 A' },
   { id: 'user-b', name: '테스트 사용자 B' },
