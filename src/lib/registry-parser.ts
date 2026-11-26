@@ -14,6 +14,7 @@ export interface ParsedRegistryDocument {
   rankLabel: string;
   riskFlags: string[];
   maskedPiiCount: number;
+  exposedRrnCount: number;
 }
 
 const CORP_PATTERN = /(주식회사|\(주\)|㈜|유한회사|법인|재단|조합|은행|공사|신탁|캐피탈|저축|협회|위원회|대한민국|서울특별시|광역시|구청|시청)/;
@@ -180,5 +181,6 @@ export function parseKoreanRegistryText(rawText: string): ParsedRegistryDocument
     rankLabel,
     riskFlags,
     maskedPiiCount: rrnCount + ownerMaskedCount,
+    exposedRrnCount: rrnCount,
   };
 }

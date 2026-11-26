@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '등기로 — 지도에서 등기 찾기',
-  description: '지도에서 등기 자료 조회와 변동 알림을 제공하는 등기로',
+  title: '등기로 — 등기부등본 공유·열람 & 변동 알림',
+  description: '공유된 부동산 등기부등본 PDF를 바로 확인하고, 관심 물건의 등기변동을 알림으로 받아보세요.',
   icons: {
     icon: [
       { url: '/assets/images/favicon-light.png?v=2', media: '(prefers-color-scheme: light)' },

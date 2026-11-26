@@ -54,4 +54,13 @@ test('을구 기록사항 없음과 가압류 위험 키워드를 정확히 구�
 
   const risky = parseKoreanRegistryText(cleanText + '\n가압류 등기');
   assert.deepEqual(risky.riskFlags, ['가압류']);
+  assert.equal(risky.exposedRrnCount, 0);
+});
+
+test('주민등록번호 13자리 노출 여부(exposedRrnCount)와 미공개 마스킹 PDF를 구분한다', () => {
+  const maskedPdf = parseKoreanRegistryText('고유번호 1101-2024-000001\n갑구\n소유자 김현준 900101-*******');
+  assert.equal(maskedPdf.exposedRrnCount, 0);
+
+  const exposedPdf = parseKoreanRegistryText('고유번호 1101-2024-000001\n갑구\n소유자 김현준 900101-1234567');
+  assert.equal(exposedPdf.exposedRrnCount, 1);
 });

@@ -1,12 +1,20 @@
-# 등기로 (Next.js + Supabase)
+# 등기로 (Deunggiro)
 
-지도에서 개별 부동산의 등기 정보를 찾고, 회원이 확보한 등기 자료를 허용 범위에서 공유하며, 관심 부동산의 등기변동을 알리는 웹 서비스입니다. **Next.js (App Router) + Supabase (PostgreSQL · Auth · Storage)** 기반으로 구성되어 있으며 Vercel에 바로 배포할 수 있습니다.
+부동산 등기부등본을 **공유·열람**하여 중복 발급 수수료를 줄이고, 관심 등록한 부동산의 **등기변동 알림**을 받는 웹 서비스입니다.  
+**Next.js (App Router) + Supabase (PostgreSQL · Auth · Storage)** 기반으로 구성되어 있습니다.
+
+## 핵심 기능
+
+- **등기 검색 & PDF 뷰어**: 주소·건물명·고유번호로 공유된 최신 등기부등본을 찾고 브라우저 PDF 뷰어로 바로 열람
+- **대량 등기 공유 (+P)**: 1건부터 수백 건의 등기 PDF를 드래그&드롭으로 일괄 업로드 (고유번호·발급일 자동 인식, 주민번호 노출 PDF 차단, 포인트 적립)
+- **내 관리 물건 (변동 알림)**: 금융권 다건(200건+) 테이블 관리 및 개인 전세집 1건 감시, 상태 필터, 변동 감지 알림
+- **알림 & 포인트**: 변동 알림 타임라인 및 포인트 적립·사용 내역 관리
 
 ## 로컬 실행
 
 ```powershell
 Copy-Item .env.example .env.local
-# .env.local에 카카오맵, Supabase, 공공데이터포털 키를 입력합니다.
+# .env.local에 Supabase 키를 입력합니다. (미설정 시 내장 데모 데이터로 체험 가능)
 npm install
 npm run dev
 ```
@@ -17,21 +25,17 @@ npm run dev
 
 | 변수명 | 용도 | 필수 여부 |
 | --- | --- | --- |
-| `NEXT_PUBLIC_KAKAO_MAP_JS_KEY` | 카카오맵 JavaScript SDK 지도·검색 (기존 `KAKAO_MAP_JS_KEY` 호환) | 실지도 사용 시 |
-| `NEXT_PUBLIC_SUPABASE_URL` | Supabase 프로젝트 URL | 회원·관심목록 사용 시 |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase Anon Public Key | 회원·관심목록 사용 시 |
-| `DATA_GO_KR_SERVICE_KEY` | 공공데이터포털 국토교통부 건축HUB 건축물대장 인증키(Decoding) | 실주소 건축물대장 조회 시 |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase 프로젝트 URL | 회원·영구 저장 사용 시 |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase Anon Public Key | 회원·영구 저장 사용 시 |
 
 ## Supabase 초기 설정
 
-1. [Supabase](https://supabase.com)에서 새 프로젝트를 생성합니다.
-2. **SQL Editor**에서 [supabase/migrations/0001_initial_schema.sql](supabase/migrations/0001_initial_schema.sql)을 실행해 테이블(`properties`, `registry_documents`, `change_events`, `watchlists`, `notifications`), RLS 정책, Private Storage 버킷(`registry-originals`)을 생성합니다.
-3. **Authentication > Providers**에서 Email 및 필요 시 Kakao / Google OAuth를 활성화하고, Redirect URL에 `http://localhost:4173/auth/callback`과 Vercel 배포 도메인 `https://<도메인>/auth/callback`을 등록합니다.
-
-## Vercel 배포
-
-1. GitHub 저장소를 Vercel에 연결합니다 (Framework Preset: `Next.js`).
-2. Project Settings > Environment Variables에 위 환경변수를 등록하고 배포합니다.
+1. [Supabase](https://supabase.com)에서 프로젝트를 생성합니다.
+2. **SQL Editor**에서 아래 마이그레이션 파일을 순서대로 실행합니다:
+   - [0001_initial_schema.sql](supabase/migrations/0001_initial_schema.sql)
+   - [0002_properties_insert_policy.sql](supabase/migrations/0002_properties_insert_policy.sql)
+   - [0003_points_and_pdf_viewer.sql](supabase/migrations/0003_points_and_pdf_viewer.sql)
+3. **Authentication > Providers**에서 Email 인증을 활성화하고 Redirect URL에 `http://localhost:4173/auth/callback`을 등록합니다.
 
 ## 검증 명령
 

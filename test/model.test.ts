@@ -12,41 +12,11 @@ import {
   submitSample,
   toggleWatch,
 } from '../src/lib/model.ts';
-import { dedupeKakaoResults, demoSearch, normalizeKakaoResult } from '../src/lib/map.ts';
 
 const unit = 'sample-unit-101';
 const neighbor = 'sample-unit-102';
 const userA = 'user-a';
 const userB = 'user-b';
-
-test('주소, 지번, 건물명으로 같은 검증 위치를 검색한다', () => {
-  for (const term of ['서울시청', '세종대로 110', '태평로1가 31']) {
-    assert.equal(demoSearch(term)[0].id, 'city-hall');
-  }
-  for (const [term, id] of [['서울역', 'seoul-station'], ['명동길 74', 'myeongdong'], ['청계천로 1', 'cheonggye']]) {
-    assert.equal(demoSearch(term)[0].id, id);
-  }
-  assert.deepEqual(demoSearch('없는검색결과'), []);
-});
-
-test('같은 공공 장소의 카카오 주소 결과와 부서명 결과를 하나의 검증 위치 이름으로 표시한다', () => {
-  const coordinates = { x: '126.9784', y: '37.5663' };
-  const address = normalizeKakaoResult({ ...coordinates, address_name: '서울 중구 세종대로 110' });
-  const office = normalizeKakaoResult({ ...coordinates, id: 'office', place_name: '서울특별시청 부서', road_address_name: '서울 중구 세종대로 110' });
-  assert.equal(address.id, 'city-hall');
-  assert.equal(office.id, address.id);
-  assert.equal(office.name, '서울시청');
-});
-
-test('일반 카카오맵 검색에서 동일 위치의 같은 이름 결과는 중복 제거하고 서로 다른 장소는 유지한다', () => {
-  const deduped = dedupeKakaoResults([
-    { x: '126.9820', y: '37.5660', address_name: '서울 중구 을지로 100' },
-    { id: 'place-1', x: '126.9821', y: '37.5661', place_name: '서울 중구 을지로 100', road_address_name: '서울 중구 을지로 100' },
-    { id: 'place-2', x: '126.9820', y: '37.5660', place_name: '을지로 빌딩', road_address_name: '서울 중구 을지로 100' },
-    { id: 'invalid', x: 'NaN', y: '37.5660', place_name: '좌표 오류' },
-  ]);
-  assert.deepEqual(deduped.map((item: any) => item.name), ['서울 중구 을지로 100', '을지로 빌딩']);
-});
 
 test('동일 위치의 호수를 구분하고 틀린 문서와 보류된 자료의 게시를 막는다', () => {
   const state = initialState();

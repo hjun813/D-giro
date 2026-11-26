@@ -1,5 +1,5 @@
 import DeunggiroApp from '@/components/DeunggiroApp';
 
 export default function RegisterPage() {
-  return <DeunggiroApp initialPage="register" />;
+  return <DeunggiroApp initialTab="search" initialAuthModal="register" />;
 }
