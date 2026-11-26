@@ -17,6 +17,7 @@ const ledgerApi = createBuildingLedgerApi(createMolitLedgerProvider({
 }));
 const files = new Map([
   ['/', ['web/index.html', 'text/html; charset=utf-8']],
+  ['/search', ['web/index.html', 'text/html; charset=utf-8']],
   ['/login', ['web/index.html', 'text/html; charset=utf-8']],
   ['/register', ['web/index.html', 'text/html; charset=utf-8']],
   ['/guide', ['web/index.html', 'text/html; charset=utf-8']],
@@ -26,7 +27,12 @@ const files = new Map([
   ['/map.js', ['web/map.js', 'text/javascript; charset=utf-8']],
   ['/uploads.js', ['web/uploads.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['web/styles.css', 'text/css; charset=utf-8']],
-  ['/logo.png', ['logo.png', 'image/png']],
+  ['/logo.png', ['web/assets/images/logo.png', 'image/png']],
+  ['/assets/images/logo.png', ['web/assets/images/logo.png', 'image/png']],
+  ['/assets/images/favicon-light.png', ['web/assets/images/favicon-light.png', 'image/png']],
+  ['/assets/images/favicon-dark.png', ['web/assets/images/favicon-dark.png', 'image/png']],
+  ['/assets/images/app_icon_light.png', ['web/assets/images/app_icon_light.png', 'image/png']],
+  ['/assets/images/app_icon_dark.png', ['web/assets/images/app_icon_dark.png', 'image/png']],
 ]);
 
 const samplePaths = samples.map((sample) => {

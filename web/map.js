@@ -208,6 +208,7 @@ function makePin(location, selected, pinMeta) {
   pin.className = `map-pin pin-tone-${tone}${selected ? ' is-selected' : ''}${info.hasDoc ? ' has-doc' : ''}`;
   pin.setAttribute('aria-pressed', selected);
   pin.setAttribute('aria-label', `${location.name}${info.label ? `, ${info.label}` : ''}`);
+  pin.title = location.name;
   pin.innerHTML = `<span class="pin-dot pin-dot-${tone}" aria-hidden="true"></span><span class="pin-name"></span>${info.tag ? `<span class="pin-tag" aria-hidden="true"></span>` : ''}${info.count ? `<span class="pin-count" aria-hidden="true">${info.count}</span>` : ''}`;
   pin.querySelector('.pin-name').textContent = location.name;
   if (info.tag) pin.querySelector('.pin-tag').textContent = info.tag;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { documentsFor, eventsFor, initialState, loadState, needsUpdate, runRound, saveState, submitSample, toggleWatch } from '../web/model.js';
+import { autoSubmitSample, documentsFor, eventsFor, initialState, loadState, needsUpdate, runRound, saveState, submitSample, toggleWatch } from '../web/model.js';
 import { dedupeKakaoResults, demoSearch, normalizeKakaoResult } from '../web/map.js';
 
 const unit = 'sample-unit-101';
@@ -47,6 +47,20 @@ test('동일 위치의 호수를 구분하고 틀린 문서와 보류된 자료�
   assert.equal(documentsFor(state, neighbor).length, 0);
   assert.equal(submitSample(state, userA, neighbor, 'neighbor').status, 'published');
   assert.equal(documentsFor(state, neighbor)[0].sampleId, 'neighbor');
+});
+
+test('등기 파일을 올리면 주소를 미리 고르지 않아도 자동으로 대상을 매칭해 등록한다', () => {
+  const state = initialState();
+  assert.equal(documentsFor(state, neighbor).length, 0);
+  const published = autoSubmitSample(state, userA, 'neighbor');
+  assert.equal(published.status, 'published');
+  assert.equal(published.targetId, neighbor);
+  assert.equal(documentsFor(state, neighbor)[0].sampleId, 'neighbor');
+  assert.equal(autoSubmitSample(state, userA, 'neighbor').status, 'duplicate');
+  assert.equal(autoSubmitSample(state, userA, 'unmasked').status, 'review');
+  const unreadable = autoSubmitSample(state, userA, 'unreadable');
+  assert.equal(unreadable.status, 'unreadable');
+  assert.equal(unreadable.targetId, null);
 });
 
 test('중복 문서를 건너뛰고 뒤늦게 제출한 문서는 발급 시각순으로 정렬한다', () => {

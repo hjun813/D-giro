@@ -87,6 +87,17 @@ export function submitSample(state, userId, targetId, sampleId, at = new Date().
   return submission;
 }
 
+export function autoSubmitSample(state, userId, sampleId, at = new Date().toISOString()) {
+  const sample = samples.find((item) => item.id === sampleId);
+  if (!sample) return null;
+  if (sample.targetId === null) {
+    const submission = { userId, targetId: null, sampleId, at, status: 'unreadable' };
+    state.submissions.unshift(submission);
+    return submission;
+  }
+  return submitSample(state, userId, sample.targetId, sampleId, at);
+}
+
 export function toggleWatch(state, userId, targetId) {
   const watched = state.watches[userId];
   const index = watched.indexOf(targetId);

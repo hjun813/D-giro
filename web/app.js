@@ -1,6 +1,6 @@
 import { locations, rounds, sampleFilename, samples, targetLabel, targets, users } from './fixtures.js';
-import { documentsFor, eventsFor, initialState, loadState, needsUpdate, runRound, saveState, submitSample, toggleWatch } from './model.js';
-import { connectKakaoMap, createDemoMap } from './map.js';
+import { autoSubmitSample, documentsFor, eventsFor, initialState, loadState, needsUpdate, runRound, saveState, submitSample, toggleWatch } from './model.js';
+import { connectKakaoMap, createDemoMap, demoSearch } from './map.js';
 import { identifySampleFile } from './uploads.js';
 
 const mapPage = document.querySelector('#map-page');
@@ -47,6 +47,7 @@ function pageFromPath(pathname = window.location.pathname) {
   if (pathname === '/login') return 'login';
   if (pathname === '/register') return 'register';
   if (pathname === '/guide') return 'guide';
+  if (pathname === '/search') return 'search';
   return 'map';
 }
 
@@ -66,6 +67,17 @@ let results = locations;
 let searchTerm = '';
 let searchStatus = 'ready';
 let searchSequence = 0;
+let modeSearchQuery = '';
+let modeSearchResults = [];
+let modeSearchStatus = 'idle';
+let modeSuggestions = [];
+let modeSuggestTimer;
+let modeSuggestSequence = 0;
+let autoParsed = null;
+let suggestions = [];
+let activeSuggestion = -1;
+let suggestTimer;
+let suggestSequence = 0;
 let sheet = 'open';
 let toastTimer;
 let dialogTrigger;
@@ -468,6 +480,7 @@ function renderLocation() {
 
 function renderPanel() {
   mapPage.dataset.drawer = panelOpen ? 'open' : 'closed';
+  document.body.dataset.drawer = page === 'map' && panelOpen ? 'open' : 'closed';
   const drawerToggle = document.querySelector('#drawer-toggle');
   if (drawerToggle) {
     drawerToggle.setAttribute('aria-expanded', String(panelOpen));
@@ -479,8 +492,9 @@ function renderPanel() {
   renderMapBreadcrumb();
   const clearBtn = document.querySelector('#search-clear');
   if (clearBtn) clearBtn.hidden = !searchInput.value.trim();
-  panel.hidden = !panelOpen;
-  if (!panelOpen) return;
+  panel.dataset.open = panelOpen ? 'true' : 'false';
+  panel.setAttribute('aria-hidden', String(!panelOpen));
+  if (!panelOpen && panel.childElementCount > 0) return;
   const scrollTop = panel.querySelector('.panel-content')?.scrollTop || 0;
   panel.dataset.sheet = sheet;
   const toggle = sheet === 'closed' ? '펼치기' : sheet === 'expanded' ? '접기' : '펼치기';
@@ -599,6 +613,77 @@ function renderProfilePage() {
           <div class="record-actions">${status(item.status)}${item.status === 'published' || item.status === 'duplicate' ? button('자료 보기', 'document', { id: item.sampleId, kind: 'quiet' }) : ''}</div></div>`;
       }).join('')}</div>` : '<p class="muted">아직 제출한 가상 자료가 없어요.</p>'}
     </section>`;
+}
+
+const uploadIcon = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 20h16"/></svg>`;
+const mapModeIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>`;
+
+function renderSearchModePage() {
+  const hasResults = modeSearchStatus === 'done' || modeSearchStatus === 'pending' || modeSearchStatus === 'error';
+  const shortcuts = ['city-hall', 'gangnam-stn', 'coex', 'hongdae', 'seongsu-stn', 'yeouido-park']
+    .map((id) => locations.find((item) => item.id === id))
+    .filter(Boolean);
+  const data = registryState();
+  return `<section class="search-home${hasResults ? ' has-results' : ''}">
+    <div class="search-home-hero">
+      <div class="search-home-brand">
+        <h1 class="search-wordmark" tabindex="-1"><span class="wordmark-main">등기</span><span class="wordmark-accent">로</span></h1>
+        <p class="search-home-sub">주소나 건물명을 입력해 등기 정보와 권리관계를 바로 확인하세요</p>
+      </div>
+      <div class="google-search-wrap">
+        <form id="mode-search-form" class="google-search-bar" role="search">
+          <span class="search-leading" aria-hidden="true"><span class="icon icon-search"></span></span>
+          <label for="mode-search-input" class="sr-only">주소, 지번, 건물명 검색</label>
+          <input id="mode-search-input" type="search" value="${escape(modeSearchQuery)}" placeholder="주소, 지번, 건물명으로 등기 검색" autocomplete="off">
+          ${modeSearchQuery ? '<button type="button" class="search-clear" data-action="mode-search-clear" aria-label="검색어 지우기">×</button>' : ''}
+          <button type="submit" class="search-submit">검색</button>
+        </form>
+        <div id="mode-search-suggest" class="search-suggest google-suggest" role="listbox" hidden></div>
+      </div>
+      ${hasResults ? '' : `<div class="google-shortcuts">
+        <span class="google-shortcuts-label">자주 찾는 위치</span>
+        <div class="google-shortcut-row">${shortcuts.map((loc) =>
+          `<button type="button" class="google-shortcut" data-action="mode-quick-search" data-id="${escape(loc.id)}">
+            <span class="google-shortcut-circle"><span class="icon icon-pin" aria-hidden="true"></span></span>
+            <span>${escape(loc.name)}</span>
+          </button>`).join('')}
+        </div>
+      </div>`}
+    </div>
+    ${hasResults ? `<div class="google-results">
+      <div class="google-results-head">
+        <p class="muted">${modeSearchStatus === 'pending' ? '검색하고 있어요...' : modeSearchStatus === 'error' ? '검색 결과를 불러오지 못했어요.' : `"${escape(modeSearchQuery)}" 검색 결과 ${modeSearchResults.length}곳`}</p>
+        <div class="button-row">${button('검색 초기화', 'mode-search-clear', { kind: 'quiet' })}</div>
+      </div>
+      ${modeSearchStatus === 'done' && !modeSearchResults.length
+        ? '<section class="empty-state"><h2>검색 결과가 없어요</h2><p>다른 도로명, 지번 또는 건물명으로 다시 검색해 보세요.</p></section>'
+        : `<div class="google-result-list">${modeSearchResults.map((location) => {
+            const locTargets = targets.filter((t) => t.locationId === location.id);
+            return `<article class="google-result-card">
+              <div class="google-result-top">
+                <div>
+                  <span class="google-result-area">${escape(location.area)}${location.addresses?.[0] ? ` · ${escape(location.addresses[0])}` : ''}</span>
+                  <h2>${escape(location.name)}</h2>
+                </div>
+                ${button('지도에서 보기', 'mode-open-map', { id: location.id, kind: 'quiet' })}
+              </div>
+              ${locTargets.length ? `<div class="google-target-list">${locTargets.map((t) => {
+                const latest = documentsFor(data, t.id)[0];
+                return `<div class="google-target-row">
+                  <div class="google-target-info">
+                    <div class="record-head"><strong>${escape(targetLabel(t))}</strong>${badge(t.type, 'neutral')}${latest ? badge('공유 등기 있음', 'info') : badge('자료 미등록', 'neutral')}</div>
+                    <p class="muted">${latest ? `소유권 ${escape(latest.owner)} · 근저당 ${latest.amount === null ? '없음' : formatKoreanAmount(latest.amount)} · 발급 ${formatTime(latest.issuedAt)}` : '공유된 등기 자료가 없어요. 우측 하단 등기 자동 등록으로 바로 올릴 수 있어요.'}</p>
+                  </div>
+                  <div class="button-row">
+                    ${latest ? button('등기 보기', 'document', { id: latest.sampleId, kind: 'primary' }) : button('자료 등록', 'mode-open-share', { id: t.id, kind: 'secondary' })}
+                    ${button('상세', 'open-target', { id: t.id, kind: 'quiet' })}
+                  </div>
+                </div>`;
+              }).join('')}</div>` : `<p class="muted">지도에서 선택하면 공공 건축물대장 실데이터를 조회할 수 있어요.</p>`}
+            </article>`;
+          }).join('')}</div>`}
+    </div>` : ''}
+  </section>`;
 }
 
 const userIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M5 20c1.5-3.5 4.2-5 7-5s5.5 1.5 7 5"/></svg>`;
@@ -739,7 +824,7 @@ function renderAuthPage(mode) {
     : '계정에 로그인해 저장한 관심 부동산 목록을 불러오세요.';
   const brandPanel = `<aside class="auth-brand" aria-label="등기로 안내">
     <div class="auth-brand-top">
-      <button type="button" class="auth-logo-button" data-action="page" data-id="map" aria-label="등기로 메인 지도로 이동"><img src="/logo.png" width="112" height="49" alt="등기로"></button>
+      <button type="button" class="auth-logo-button" data-action="page" data-id="map" aria-label="등기로 메인 지도로 이동"><img src="/assets/images/logo.png" width="112" height="49" alt="등기로"></button>
       <span class="auth-pill">지도 기반 등기 탐색</span>
     </div>
     <div class="auth-brand-copy">
@@ -812,8 +897,22 @@ function render() {
     if (window.location.pathname !== '/login') window.history.replaceState({ page }, '', '/login');
   }
   const isAuthPage = page === 'login' || page === 'register';
+  const isExplorePage = page === 'map' || page === 'search';
   document.body.dataset.authPage = isAuthPage ? 'true' : 'false';
+  document.body.dataset.searchPage = page === 'search' ? 'true' : 'false';
+  document.body.dataset.drawer = page === 'map' && panelOpen ? 'open' : 'closed';
   document.querySelector('.site-header').hidden = isAuthPage;
+  const switcher = document.querySelector('#mode-switcher');
+  if (switcher) {
+    switcher.hidden = !isExplorePage;
+    for (const btn of switcher.querySelectorAll('button')) {
+      const active = btn.dataset.id === page;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', String(active));
+    }
+  }
+  const fab = document.querySelector('#fab-auto-upload');
+  if (fab) fab.hidden = !isExplorePage;
   mapPage.hidden = page !== 'map';
   subPage.hidden = page === 'map';
   for (const tab of document.querySelectorAll('.navigation [data-auth-only]')) {
@@ -828,7 +927,7 @@ function render() {
     profileTab.title = account?.email ? `${account.email} · 내 정보` : '내 정보';
   }
   for (const tab of document.querySelectorAll('.navigation [data-action="page"]')) {
-    const active = tab.dataset.id === page || (tab.id === 'nav-auth' && isAuthPage);
+    const active = tab.dataset.id === page || (tab.dataset.id === 'map' && page === 'search') || (tab.id === 'nav-auth' && isAuthPage);
     if (active) tab.setAttribute('aria-current', 'page');
     else tab.removeAttribute('aria-current');
   }
@@ -838,6 +937,7 @@ function render() {
   count.hidden = unread === 0;
   if (page === 'map') renderPanel();
   else subPage.innerHTML = {
+    search: renderSearchModePage,
     guide: renderGuidePage,
     watch: renderWatchPage,
     alerts: renderAlertsPage,
@@ -910,7 +1010,10 @@ async function submitAuth(form) {
     accountPending = false;
     const redirect = authRedirect;
     authRedirect = null;
-    if (redirect?.targetId) {
+    if (redirect?.action === 'auto-upload') {
+      changePage(redirect.page || 'search');
+      openAutoUpload();
+    } else if (redirect?.targetId) {
       if (window.location.pathname !== '/') window.history.pushState({ page: 'map' }, '', '/');
       openTarget(redirect.targetId);
       if (redirect.action === 'share') openShare();
@@ -1053,6 +1156,130 @@ function openHistory(id) {
     </section>`);
 }
 
+function openAutoUpload() {
+  if (!account) {
+    requireLogin('등기 자료를 자동 등록하려면 로그인해 주세요.', { action: 'auto-upload', page });
+    return;
+  }
+  autoParsed = null;
+  const demoFiles = ['neighbor', 'unit-new', 'officetel-302-base', 'multi-base', 'unmasked', 'unreadable']
+    .map((id) => samples.find((item) => item.id === id))
+    .filter(Boolean);
+  showDialog('등기 파일 자동 파싱 · 등록', `<p class="muted">주소를 먼저 찾지 않아도 등기 PDF·PNG 파일을 올리면 대상과 권리관계를 자동으로 파싱해 매칭해요.</p>
+    <form id="auto-sample-form">
+      <label id="auto-dropzone" class="dropzone" for="auto-sample-file">
+        <input id="auto-sample-file" name="sample" type="file" accept=".pdf,.png,application/pdf,image/png" required>
+        <span class="dropzone-badge">자동 파싱 · PDF / PNG</span>
+        <strong class="dropzone-title">등기 파일을 끌어다 놓거나 클릭해 선택하세요</strong>
+        <span class="dropzone-meta">파일을 선택하면 부동산 대상·소유권·근저당 정보를 즉시 추출해요</span>
+      </label>
+      <div id="auto-parse-preview" class="auto-preview" hidden></div>
+      <p class="upload-feedback" role="status" hidden></p>
+      <button type="submit" id="auto-submit-btn" class="button primary auth-submit" disabled>자동 파싱 결과로 등록</button>
+    </form>
+    <details class="sample-files"><summary>자동 파싱 테스트용 예시 파일 내려받기 (${demoFiles.length}개)</summary>
+      <ul>${demoFiles.map((sample) => `<li><a href="/samples/${sampleFilename(sample)}" download>${escape(sample.name)} <span>${sample.format === 'PDF' ? 'PDF' : 'PNG'}</span></a></li>`).join('')}</ul>
+    </details>`);
+}
+
+async function previewAutoFile(file) {
+  const zone = dialog.querySelector('#auto-dropzone');
+  const preview = dialog.querySelector('#auto-parse-preview');
+  const feedback = dialog.querySelector('.upload-feedback');
+  const submitBtn = dialog.querySelector('#auto-submit-btn');
+  if (!zone || !preview || !feedback || !submitBtn) return;
+
+  autoParsed = null;
+  submitBtn.disabled = true;
+  feedback.hidden = true;
+  preview.hidden = true;
+
+  const title = zone.querySelector('.dropzone-title');
+  const meta = zone.querySelector('.dropzone-meta');
+  if (!file) {
+    zone.classList.remove('has-file');
+    title.textContent = '등기 파일을 끌어다 놓거나 클릭해 선택하세요';
+    meta.textContent = '파일을 선택하면 부동산 대상·소유권·근저당 정보를 즉시 추출해요';
+    return;
+  }
+
+  zone.classList.add('has-file');
+  title.textContent = file.name;
+  meta.textContent = `${(file.size / 1024).toFixed(1)} KB · 문서 자동 파싱 중...`;
+
+  try {
+    const result = await identifySampleFile(file, getSampleIndex);
+    if (!dialog.open || !zone.isConnected) return;
+    if (result.error) {
+      meta.textContent = `${(file.size / 1024).toFixed(1)} KB · 파싱 실패`;
+      feedback.dataset.tone = 'danger';
+      feedback.textContent = uploadErrors[result.error];
+      feedback.hidden = false;
+      return;
+    }
+    const sample = samples.find((item) => item.id === result.sampleId);
+    const target = sample?.targetId ? targets.find((item) => item.id === sample.targetId) : null;
+    const location = target ? locations.find((item) => item.id === target.locationId) : null;
+    const alreadyExists = state.documents.some((doc) => doc.sampleId === sample?.id);
+    autoParsed = { sample, target, location, alreadyExists };
+    meta.textContent = `${(file.size / 1024).toFixed(1)} KB · 파싱 완료`;
+
+    if (!target) {
+      preview.innerHTML = `<div class="section-title"><strong>등기 대상 식별 불가</strong>${badge('식별 불가', 'danger')}</div>
+        <p class="muted">문서에서 부동산 고유번호와 동·호수를 찾지 못했어요. 제출 시 업로드 이력에 식별 불가로 기록됩니다.</p>`;
+      submitBtn.textContent = '검수 이력에 기록';
+      submitBtn.disabled = false;
+    } else if (sample.requiresReview) {
+      preview.innerHTML = `<div class="section-title"><strong>${escape(targetLabel(target))}</strong>${badge('검수 보류 대상', 'warning')}</div>
+        <p class="muted">${location ? `${escape(location.name)} · ${escape(location.area)}` : ''} · 민감정보 마스킹 검수가 필요한 문서입니다.</p>`;
+      submitBtn.textContent = '검수 보류로 제출';
+      submitBtn.disabled = false;
+    } else {
+      preview.innerHTML = `<div class="section-title"><strong>${escape(location ? `${location.name} · ${targetLabel(target)}` : targetLabel(target))}</strong>${badge(alreadyExists ? '이미 등록됨' : '자동 매칭 완료', alreadyExists ? 'neutral' : 'success')}</div>
+        <div class="doc-preview">
+          <div class="doc-preview-row"><span>부동산 유형</span><strong>${escape(target.type)}${target.areaText ? ` · ${escape(formatArea(target.areaText))}` : ''}</strong></div>
+          <div class="doc-preview-row"><span>소유권 (갑구)</span><strong>${escape(sample.owner)}</strong></div>
+          <div class="doc-preview-row"><span>근저당 (을구)</span><strong class="${sample.amount === null ? 'is-clean' : 'is-debt'}">${sample.amount === null ? '표시 항목 없음' : formatKoreanAmount(sample.amount)}</strong></div>
+          <div class="doc-preview-row"><span>발급 시각</span><strong>${formatTime(sample.issuedAt)}</strong></div>
+        </div>`;
+      submitBtn.textContent = alreadyExists ? '중복 확인 후 대상으로 이동' : `${targetLabel(target)}에 자동 등록`;
+      submitBtn.disabled = false;
+    }
+    preview.hidden = false;
+  } catch {
+    feedback.dataset.tone = 'danger';
+    feedback.textContent = '파일 파싱에 실패했어요. 다시 시도해 주세요.';
+    feedback.hidden = false;
+  }
+}
+
+function submitAutoSample() {
+  if (!autoParsed?.sample) return;
+  const feedback = dialog.querySelector('.upload-feedback');
+  const submission = autoSubmitSample(state, activeUserId(), autoParsed.sample.id);
+  if (!submission) return;
+  saveState(storage, state);
+  if (submission.status === 'published') {
+    const matchedTargetId = submission.targetId;
+    dialog.close();
+    notify('등기 문서를 자동 파싱해 등록했어요.');
+    openTarget(matchedTargetId);
+    return;
+  }
+  if (submission.status === 'duplicate' && submission.targetId) {
+    const matchedTargetId = submission.targetId;
+    dialog.close();
+    notify('이미 등록된 자료여서 해당 등기 대상으로 이동했어요.');
+    openTarget(matchedTargetId);
+    return;
+  }
+  if (feedback) {
+    feedback.dataset.tone = statusLabels[submission.status][1];
+    feedback.textContent = reviewMessages[submission.status];
+    feedback.hidden = false;
+  }
+}
+
 function openShare() {
   if (!account) {
     requireLogin('등기 자료를 공유하려면 로그인해 주세요.', { targetId, action: 'share' });
@@ -1163,40 +1390,144 @@ dialog.addEventListener('change', (event) => {
   if (event.target.id === 'sample-file') {
     dialog.querySelector('.upload-feedback').hidden = true;
     updateDropzoneLabel(event.target.files[0]);
+  } else if (event.target.id === 'auto-sample-file') {
+    void previewAutoFile(event.target.files[0]);
   }
 });
 
 dialog.addEventListener('dragover', (event) => {
-  const zone = event.target.closest('#sample-dropzone');
+  const zone = event.target.closest('#sample-dropzone, #auto-dropzone');
   if (!zone) return;
   event.preventDefault();
   zone.classList.add('is-dragover');
 });
 
 dialog.addEventListener('dragleave', (event) => {
-  const zone = event.target.closest('#sample-dropzone');
+  const zone = event.target.closest('#sample-dropzone, #auto-dropzone');
   if (!zone || zone.contains(event.relatedTarget)) return;
   zone.classList.remove('is-dragover');
 });
 
 dialog.addEventListener('drop', (event) => {
-  const zone = event.target.closest('#sample-dropzone');
+  const zone = event.target.closest('#sample-dropzone, #auto-dropzone');
   if (!zone) return;
   event.preventDefault();
   zone.classList.remove('is-dragover');
-  const input = dialog.querySelector('#sample-file');
+  const isAuto = zone.id === 'auto-dropzone';
+  const input = dialog.querySelector(isAuto ? '#auto-sample-file' : '#sample-file');
   const file = event.dataTransfer?.files?.[0];
   if (!input || !file) return;
   const transfer = new DataTransfer();
   transfer.items.add(file);
   input.files = transfer.files;
-  dialog.querySelector('.upload-feedback').hidden = true;
-  updateDropzoneLabel(file);
+  if (isAuto) {
+    void previewAutoFile(file);
+  } else {
+    dialog.querySelector('.upload-feedback').hidden = true;
+    updateDropzoneLabel(file);
+  }
 });
+
+function closeSuggestions() {
+  clearTimeout(suggestTimer);
+  suggestSequence += 1;
+  suggestions = [];
+  activeSuggestion = -1;
+  const box = document.querySelector('#search-suggest');
+  if (box) {
+    box.hidden = true;
+    box.innerHTML = '';
+  }
+  searchInput.setAttribute('aria-expanded', 'false');
+}
+
+function renderSuggestions() {
+  const box = document.querySelector('#search-suggest');
+  if (!box) return;
+  if (!suggestions.length) {
+    box.hidden = true;
+    box.innerHTML = '';
+    searchInput.setAttribute('aria-expanded', 'false');
+    return;
+  }
+  const fixtureIds = new Set(locations.map((item) => item.id));
+  box.innerHTML = suggestions.map((item, index) => {
+    const isFixture = fixtureIds.has(item.id);
+    const active = index === activeSuggestion;
+    return `<button type="button" role="option" aria-selected="${active}" class="suggest-item${active ? ' is-active' : ''}" data-action="pick-suggestion" data-id="${index}">
+      <span class="icon icon-pin" aria-hidden="true"></span>
+      <span class="suggest-copy"><strong>${escape(item.name)}</strong><span>${escape(item.area || item.addresses?.[0] || '')}</span></span>
+      ${isFixture ? '<span class="suggest-tag">검증 데이터</span>' : ''}
+    </button>`;
+  }).join('');
+  box.hidden = false;
+  searchInput.setAttribute('aria-expanded', 'true');
+}
+
+function updateSuggestions(raw) {
+  const term = raw.trim();
+  clearTimeout(suggestTimer);
+  const sequence = ++suggestSequence;
+  activeSuggestion = -1;
+  if (!term) {
+    closeSuggestions();
+    return;
+  }
+  const localMatches = demoSearch(term).slice(0, 6);
+  suggestions = localMatches;
+  renderSuggestions();
+
+  if (mapStatus !== 'live') return;
+  suggestTimer = setTimeout(async () => {
+    try {
+      const liveMatches = await map.search(term);
+      if (sequence !== suggestSequence || searchInput.value.trim() !== term) return;
+      const merged = new Map();
+      for (const item of [...localMatches, ...liveMatches]) {
+        if (!merged.has(item.id)) merged.set(item.id, item);
+        if (merged.size >= 7) break;
+      }
+      suggestions = [...merged.values()];
+      activeSuggestion = -1;
+      renderSuggestions();
+    } catch {
+      // Keep local suggestions if live autocomplete fails.
+    }
+  }, 200);
+}
 
 searchInput.addEventListener('input', () => {
   const clearBtn = document.querySelector('#search-clear');
   if (clearBtn) clearBtn.hidden = !searchInput.value.trim();
+  updateSuggestions(searchInput.value);
+});
+
+searchInput.addEventListener('keydown', (event) => {
+  if (!suggestions.length) return;
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    activeSuggestion = (activeSuggestion + 1) % suggestions.length;
+    renderSuggestions();
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    activeSuggestion = activeSuggestion <= 0 ? suggestions.length - 1 : activeSuggestion - 1;
+    renderSuggestions();
+  } else if (event.key === 'Enter' && activeSuggestion >= 0) {
+    event.preventDefault();
+    const chosen = suggestions[activeSuggestion];
+    if (chosen) {
+      searchInput.value = chosen.name;
+      closeSuggestions();
+      selectLocation(chosen);
+    }
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    closeSuggestions();
+  }
+});
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.floating-search')) closeSuggestions();
 });
 
 document.addEventListener('keydown', (event) => {
@@ -1225,7 +1556,7 @@ function changePage(value, { push = true } = {}) {
   }
   if (value === 'map') authRedirect = null;
   page = value;
-  const targetPath = page === 'login' ? '/login' : page === 'register' ? '/register' : page === 'guide' ? '/guide' : '/';
+  const targetPath = page === 'login' ? '/login' : page === 'register' ? '/register' : page === 'guide' ? '/guide' : page === 'search' ? '/search' : '/';
   if (push && window.location.pathname !== targetPath) {
     window.history.pushState({ page }, '', targetPath);
   }
@@ -1236,6 +1567,76 @@ function changePage(value, { push = true } = {}) {
 
 window.addEventListener('popstate', () => {
   changePage(pageFromPath(), { push: false });
+});
+
+async function runModeSearch(raw) {
+  const term = raw.trim();
+  modeSearchQuery = term;
+  modeSuggestions = [];
+  if (!term) {
+    modeSearchStatus = 'idle';
+    modeSearchResults = [];
+    render();
+    return;
+  }
+  modeSearchStatus = 'pending';
+  render();
+  try {
+    modeSearchResults = await map.search(term);
+    modeSearchStatus = 'done';
+  } catch {
+    modeSearchResults = demoSearch(term);
+    modeSearchStatus = 'done';
+  }
+  render();
+}
+
+function renderModeSuggestions() {
+  const box = document.querySelector('#mode-search-suggest');
+  if (!box) return;
+  if (!modeSuggestions.length) {
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  const fixtureIds = new Set(locations.map((item) => item.id));
+  box.innerHTML = modeSuggestions.map((item, index) => `<button type="button" role="option" class="suggest-item" data-action="pick-mode-suggestion" data-id="${index}">
+      <span class="icon icon-pin" aria-hidden="true"></span>
+      <span class="suggest-copy"><strong>${escape(item.name)}</strong><span>${escape(item.area || item.addresses?.[0] || '')}</span></span>
+      ${fixtureIds.has(item.id) ? '<span class="suggest-tag">검증 데이터</span>' : ''}
+    </button>`).join('');
+  box.hidden = false;
+}
+
+document.addEventListener('input', (event) => {
+  if (event.target.id !== 'mode-search-input') return;
+  const term = event.target.value.trim();
+  clearTimeout(modeSuggestTimer);
+  const sequence = ++modeSuggestSequence;
+  if (!term) {
+    modeSuggestions = [];
+    renderModeSuggestions();
+    return;
+  }
+  const localMatches = demoSearch(term).slice(0, 6);
+  modeSuggestions = localMatches;
+  renderModeSuggestions();
+  if (mapStatus !== 'live') return;
+  modeSuggestTimer = setTimeout(async () => {
+    try {
+      const liveMatches = await map.search(term);
+      if (sequence !== modeSuggestSequence) return;
+      const merged = new Map();
+      for (const item of [...localMatches, ...liveMatches]) {
+        if (!merged.has(item.id)) merged.set(item.id, item);
+        if (merged.size >= 7) break;
+      }
+      modeSuggestions = [...merged.values()];
+      renderModeSuggestions();
+    } catch {
+      // Keep local suggestions.
+    }
+  }, 200);
 });
 
 document.addEventListener('submit', async (event) => {
@@ -1249,8 +1650,20 @@ document.addEventListener('submit', async (event) => {
     await uploadSample(event.target);
     return;
   }
+  if (event.target.id === 'auto-sample-form') {
+    event.preventDefault();
+    submitAutoSample();
+    return;
+  }
+  if (event.target.id === 'mode-search-form') {
+    event.preventDefault();
+    const input = event.target.querySelector('#mode-search-input');
+    await runModeSearch(input?.value || '');
+    return;
+  }
   if (event.target.id !== 'search-form') return;
   event.preventDefault();
+  closeSuggestions();
   const term = searchInput.value.trim();
   const sequence = ++searchSequence;
   searchTerm = term;
@@ -1311,9 +1724,52 @@ document.addEventListener('click', (event) => {
       recentTargetIds = [];
       renderRecentBar();
       break;
+    case 'auto-upload': openAutoUpload(); break;
+    case 'mode-search-clear':
+      modeSearchQuery = '';
+      modeSearchResults = [];
+      modeSearchStatus = 'idle';
+      modeSuggestions = [];
+      render();
+      document.querySelector('#mode-search-input')?.focus();
+      break;
+    case 'mode-quick-search': {
+      const loc = locations.find((item) => item.id === id);
+      if (loc) void runModeSearch(loc.name);
+      break;
+    }
+    case 'pick-mode-suggestion': {
+      const chosen = modeSuggestions[Number(id)];
+      if (chosen) {
+        modeSearchQuery = chosen.name;
+        modeSearchResults = [chosen];
+        modeSearchStatus = 'done';
+        modeSuggestions = [];
+        render();
+      }
+      break;
+    }
+    case 'mode-open-map': {
+      const loc = modeSearchResults.find((item) => item.id === id) || locations.find((item) => item.id === id);
+      if (loc) selectLocation(loc);
+      break;
+    }
+    case 'mode-open-share':
+      openTarget(id);
+      openShare();
+      break;
+    case 'pick-suggestion': {
+      const chosen = suggestions[Number(id)];
+      if (!chosen) break;
+      searchInput.value = chosen.name;
+      closeSuggestions();
+      selectLocation(chosen);
+      break;
+    }
     case 'clear-search':
       searchInput.value = '';
       searchTerm = '';
+      closeSuggestions();
       results = locations;
       document.querySelector('#search-clear').hidden = true;
       searchInput.focus();
