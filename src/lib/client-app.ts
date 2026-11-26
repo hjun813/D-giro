@@ -704,7 +704,9 @@ function renderSearchModePage() {
         <p class="muted">${modeSearchStatus === 'pending' ? '검색하고 있어요...' : modeSearchStatus === 'error' ? '검색 결과를 불러오지 못했어요.' : `"${escape(modeSearchQuery)}" 검색 결과 ${modeSearchResults.length}곳`}</p>
         <div class="button-row">${button('검색 초기화', 'mode-search-clear', { kind: 'quiet' })}</div>
       </div>
-      ${modeSearchStatus === 'done' && !modeSearchResults.length
+      ${modeSearchStatus === 'pending'
+        ? renderSkeletonCards(3)
+        : modeSearchStatus === 'done' && !modeSearchResults.length
         ? '<section class="empty-state"><h2>검색 결과가 없어요</h2><p>다른 도로명, 지번 또는 건물명으로 다시 검색해 보세요.</p></section>'
         : `<div class="google-result-list">${modeSearchResults.map((location) => {
             const locTargets = targets.filter((t) => t.locationId === location.id);
@@ -1140,8 +1142,12 @@ async function changeWatch(id, control) {
     return;
   }
   const watching = !activeWatches().includes(id);
+  const originalLabel = control.textContent;
+  const isPrimary = control.classList.contains('primary');
   accountPending = true;
   control.disabled = true;
+  control.innerHTML = `<span class="spinner${isPrimary ? '' : ' spinner-dark'}" aria-hidden="true"></span><span>${watching ? '등록 중...' : '해제 중...'}</span>`;
+  pulseProgress(0);
   try {
     updateAccount(await accountRequest('watchlist', 'PUT', { accountId: account.id, targetId: id, watched: watching }));
   } catch (error) {
@@ -1155,8 +1161,10 @@ async function changeWatch(id, control) {
     notify(error.status ? error.message : '관심 목록을 저장하지 못했어요. 다시 시도해 주세요.');
     return;
   } finally {
+    finishProgress();
     accountPending = false;
     control.disabled = false;
+    control.textContent = originalLabel;
   }
   render();
   if (page === 'map') panel.querySelector('[data-action="watch"]')?.focus({ preventScroll: true });
@@ -1288,10 +1296,12 @@ async function previewAutoFile(file) {
 
   zone.classList.add('has-file');
   title.textContent = file.name;
-  meta.textContent = `${(file.size / 1024).toFixed(1)} KB · 문서 자동 파싱 중...`;
+  meta.innerHTML = `<span class="spinner spinner-sm" aria-hidden="true"></span>${(file.size / 1024).toFixed(1)} KB · 문서 자동 파싱 중...`;
+  pulseProgress(0);
 
   try {
     const result = await identifySampleFile(file, getSampleIndex);
+    finishProgress();
     if (!dialog.open || !zone.isConnected) return;
     if (result.error) {
       meta.textContent = `${(file.size / 1024).toFixed(1)} KB · 파싱 실패`;
@@ -1330,6 +1340,7 @@ async function previewAutoFile(file) {
     }
     preview.hidden = false;
   } catch {
+    finishProgress();
     feedback.dataset.tone = 'danger';
     feedback.textContent = '파일 파싱에 실패했어요. 다시 시도해 주세요.';
     feedback.hidden = false;
@@ -1427,9 +1438,10 @@ async function uploadSample(form) {
   const file = input.files[0];
   input.disabled = true;
   submit.disabled = true;
-  submit.textContent = '파일 확인 중';
+  submit.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>파일 검증 중...</span>';
   feedback.hidden = true;
   feedback.dataset.tone = 'danger';
+  pulseProgress(0);
 
   try {
     const result = await identifySampleFile(file, getSampleIndex);
@@ -1459,6 +1471,7 @@ async function uploadSample(form) {
       feedback.hidden = false;
     }
   } finally {
+    finishProgress();
     input.disabled = false;
     submit.disabled = false;
     submit.textContent = '자료 검증 및 등록';
@@ -1685,12 +1698,15 @@ async function runModeSearch(raw) {
   }
   modeSearchStatus = 'pending';
   render();
+  pulseProgress(0);
   try {
     modeSearchResults = await map.search(term);
     modeSearchStatus = 'done';
   } catch {
     modeSearchResults = demoSearch(term);
     modeSearchStatus = 'done';
+  } finally {
+    finishProgress();
   }
   render();
 }
@@ -1776,6 +1792,7 @@ document.addEventListener('submit', async (event) => {
   const feedback = document.querySelector('#search-feedback');
   feedback.textContent = '위치를 검색하고 있어요.';
   feedback.hidden = false;
+  pulseProgress(0);
   try {
     const found = term ? await map.search(term) : locations;
     if (sequence !== searchSequence) return;
@@ -1786,6 +1803,7 @@ document.addEventListener('submit', async (event) => {
     results = [];
     searchStatus = 'error';
   } finally {
+    if (sequence === searchSequence) finishProgress();
     if (sequence === searchSequence || searchStatus !== 'pending') feedback.hidden = true;
   }
   panelOpen = true;
@@ -1800,6 +1818,10 @@ document.addEventListener('submit', async (event) => {
 dialog.addEventListener('close', () => {
   openDocId = null;
   if (dialogTrigger?.isConnected) dialogTrigger.focus({ preventScroll: true });
+}, { signal });
+
+dialog.addEventListener('click', (event) => {
+  if (event.target === dialog) dialog.close();
 }, { signal });
 
 document.addEventListener('click', (event) => {
