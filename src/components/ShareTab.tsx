@@ -1,8 +1,8 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { formatKstDateTime, type RegistryDocumentItem, type RegistryProperty } from '@/lib/demo-catalog';
-import { POINTS_CONFIG } from '@/lib/points-config';
+import { isNewerRegistryDocument, POINTS_CONFIG } from '@/lib/points-config';
 import type { ParsedRegistryDocument } from '@/lib/registry-parser';
 
 export interface UploadQueueItem {
@@ -11,12 +11,14 @@ export interface UploadQueueItem {
   status: 'parsing' | 'ready' | 'pii_blocked' | 'unreadable' | 'uploading' | 'published' | 'duplicate' | 'error';
   message: string;
   parsed?: ParsedRegistryDocument;
+  isLatestForProperty?: boolean;
   pointsAwarded?: number;
 }
 
 interface ShareTabProps {
   isLoggedIn: boolean;
   supabaseConfigured: boolean;
+  existingDocuments: RegistryDocumentItem[];
   onRequireLogin: () => void;
   onDocumentsPublished: (items: Array<{ property: RegistryProperty; document: RegistryDocumentItem; points: number }>) => void;
   onToast: (message: string) => void;
@@ -31,6 +33,7 @@ const DEMO_SAMPLE_FILES = [
 export default function ShareTab({
   isLoggedIn,
   supabaseConfigured,
+  existingDocuments,
   onRequireLogin,
   onDocumentsPublished,
   onToast,
@@ -39,6 +42,17 @@ export default function ShareTab({
   const [dragOver, setDragOver] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const latestIssuedByProperty = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const doc of existingDocuments) {
+      const prev = map.get(doc.propertyId);
+      if (!prev || (doc.issuedAt && doc.issuedAt > prev)) {
+        if (doc.issuedAt) map.set(doc.propertyId, doc.issuedAt);
+      }
+    }
+    return map;
+  }, [existingDocuments]);
 
   async function analyzeFiles(files: File[]) {
     const pdfFiles = files.filter((f) => /\.pdf$/i.test(f.name) || f.type === 'application/pdf');
@@ -108,6 +122,10 @@ export default function ShareTab({
             continue;
           }
 
+          const propIdKey = parsed.registryUniqueNo ? `iros:${parsed.registryUniqueNo}` : '';
+          const existingLatest = propIdKey ? latestIssuedByProperty.get(propIdKey) : null;
+          const isLatest = isNewerRegistryDocument(parsed.issuedAt || new Date().toISOString(), existingLatest);
+
           setQueue((prev) =>
             prev.map((q) =>
               q.localId === item.localId
@@ -115,7 +133,10 @@ export default function ShareTab({
                     ...q,
                     status: 'ready',
                     parsed,
-                    message: '개인정보 안전 확인 완료 · 공유 가능',
+                    isLatestForProperty: isLatest,
+                    message: isLatest
+                      ? '최신 등기 확인 완료 · 포인트 적립 대상'
+                      : '이전 시점 등기 · 이력 등록만 (포인트 미적립)',
                   }
                 : q,
             ),
@@ -209,12 +230,20 @@ export default function ShareTab({
               source: 'supabase',
               uploadedByMe: true,
             };
-            const points = Number(data.pointsAwarded ?? POINTS_CONFIG.uploadReward);
+            const points = Number(data.pointsAwarded ?? 0);
             publishedBatch.push({ property: prop, document: doc, points });
             setQueue((prev) =>
               prev.map((q) =>
                 q.localId === item.localId
-                  ? { ...q, status: 'published', pointsAwarded: points, message: `공유 완료 (+${points}${POINTS_CONFIG.unit})` }
+                  ? {
+                      ...q,
+                      status: 'published',
+                      pointsAwarded: points,
+                      message:
+                        points > 0
+                          ? `최신 등기 공유 완료 (+${points}${POINTS_CONFIG.unit})`
+                          : '이전 시점 등기 이력 등록 완료 (0P)',
+                    }
                   : q,
               ),
             );
@@ -268,12 +297,22 @@ export default function ShareTab({
           source: 'demo',
           uploadedByMe: true,
         };
-        const points = POINTS_CONFIG.uploadReward;
+        const existingLatest = latestIssuedByProperty.get(propertyId) || null;
+        const isLatest = isNewerRegistryDocument(doc.issuedAt, existingLatest);
+        const points = isLatest ? POINTS_CONFIG.uploadReward : 0;
         publishedBatch.push({ property: prop, document: doc, points });
         setQueue((prev) =>
           prev.map((q) =>
             q.localId === item.localId
-              ? { ...q, status: 'published', pointsAwarded: points, message: `체험 공유 완료 (+${points}${POINTS_CONFIG.unit})` }
+              ? {
+                  ...q,
+                  status: 'published',
+                  pointsAwarded: points,
+                  message:
+                    points > 0
+                      ? `체험 최신 등기 공유 완료 (+${points}${POINTS_CONFIG.unit})`
+                      : '체험 이전 시점 이력 등록 완료 (0P)',
+                }
               : q,
           ),
         );
@@ -289,7 +328,9 @@ export default function ShareTab({
   const readyCount = queue.filter((q) => q.status === 'ready').length;
   const publishedCount = queue.filter((q) => q.status === 'published').length;
   const blockedCount = queue.filter((q) => q.status === 'pii_blocked' || q.status === 'unreadable' || q.status === 'error').length;
-  const expectedPoints = readyCount * POINTS_CONFIG.uploadReward;
+  const expectedPoints = queue
+    .filter((q) => q.status === 'ready' && q.isLatestForProperty !== false)
+    .length * POINTS_CONFIG.uploadReward;
 
   return (
     <div className="page-container">
@@ -297,8 +338,8 @@ export default function ShareTab({
         <div>
           <h1>등기 PDF 공유하고 포인트 받기</h1>
           <p>
-            1건부터 200건까지 한 번에 드래그해서 올리세요. 고유번호와 발급일을 자동 인식하고 건당{' '}
-            <strong>+{POINTS_CONFIG.uploadReward}{POINTS_CONFIG.unit}</strong>를 적립해 드립니다.
+            1건부터 200건까지 한 번에 드래그해서 올리세요. 해당 물건의 <strong>최신 등기</strong>를 공유하면 건당{' '}
+            <strong>+{POINTS_CONFIG.uploadReward}{POINTS_CONFIG.unit}</strong>가 적립됩니다. (이전 시점 등기는 이력만 등록)
           </p>
         </div>
         <button type="button" className="btn btn-soft btn-sm" onClick={loadDemoSampleBatch}>
@@ -412,10 +453,14 @@ export default function ShareTab({
                     </td>
                     <td className="align-right cell-strong">
                       {item.status === 'ready'
-                        ? `+${POINTS_CONFIG.uploadReward}${POINTS_CONFIG.unit}`
+                        ? item.isLatestForProperty === false
+                          ? `0${POINTS_CONFIG.unit}`
+                          : `+${POINTS_CONFIG.uploadReward}${POINTS_CONFIG.unit}`
                         : item.status === 'published'
-                          ? `+${item.pointsAwarded ?? POINTS_CONFIG.uploadReward}${POINTS_CONFIG.unit}`
-                          : '0P'}
+                          ? (item.pointsAwarded ?? 0) > 0
+                            ? `+${item.pointsAwarded}${POINTS_CONFIG.unit}`
+                            : `0${POINTS_CONFIG.unit}`
+                          : `0${POINTS_CONFIG.unit}`}
                     </td>
                   </tr>
                 ))}

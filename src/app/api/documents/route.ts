@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { extractPdfText } from '@/lib/pdf-extract';
-import { POINTS_CONFIG } from '@/lib/points-config';
+import { isNewerRegistryDocument, POINTS_CONFIG } from '@/lib/points-config';
 import { parseKoreanRegistryText } from '@/lib/registry-parser';
 import { getSupabaseConfig } from '@/lib/supabase/config';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
@@ -146,6 +146,19 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // 기존 최신 등기 발급일시 조회 (최신 등기에 한해서만 포인트 적립)
+    const { data: latestRows } = await supabase
+      .from('registry_documents')
+      .select('issued_at')
+      .eq('property_id', propertyId)
+      .eq('status', 'published')
+      .order('issued_at', { ascending: false, nullsFirst: false })
+      .limit(1);
+
+    const existingLatestIssuedAt = latestRows?.[0]?.issued_at || null;
+    const candidateIssuedAt = parsed.issuedAt || new Date().toISOString();
+    const isLatestForProperty = isNewerRegistryDocument(candidateIssuedAt, existingLatestIssuedAt);
+
     // 원본 PDF를 Private Storage에 저장 (PDF 뷰어에서 Signed URL로 안전 열람)
     const storagePath = `${user.id}/${fileSha256}.pdf`;
     await supabase.storage.from('registry-originals').upload(storagePath, bytes, {
@@ -177,7 +190,7 @@ export async function POST(request: NextRequest) {
         file_sha256: fileSha256,
         storage_path: storagePath,
         status: 'published',
-        issued_at: parsed.issuedAt || new Date().toISOString(),
+        issued_at: candidateIssuedAt,
         owner_masked: parsed.ownerMasked,
         ownership_cause: parsed.ownershipCause || null,
         mortgage_amount: parsed.mortgageAmount,
@@ -195,21 +208,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 포인트 적립 (best-effort: 0003 마이그레이션 미적용 시에도 등록은 유지)
-    const pointsAwarded = POINTS_CONFIG.uploadReward;
-    await supabase.from('point_ledger').insert({
-      user_id: user.id,
-      delta: pointsAwarded,
-      reason: 'upload_reward',
-      ref_id: inserted.id,
-      note: `${parsed.address || propertyId} 등기 PDF 공유`,
-    }).then(() => {}, () => {});
+    // 최신 등기에 한해서만 포인트 적립 (best-effort: 0003 마이그레이션 미적용 시에도 등록은 유지)
+    const pointsAwarded = isLatestForProperty ? POINTS_CONFIG.uploadReward : 0;
+    if (pointsAwarded > 0) {
+      await supabase.from('point_ledger').insert({
+        user_id: user.id,
+        delta: pointsAwarded,
+        reason: 'upload_reward',
+        ref_id: inserted.id,
+        note: `${parsed.address || propertyId} 최신 등기 PDF 공유`,
+      }).then(() => {}, () => {});
+    }
 
     return NextResponse.json({
       status: 'published',
       propertyId,
       parsed,
       document: { ...inserted, has_pdf: true, uploaded_by_me: true },
+      isLatestForProperty,
       pointsAwarded,
     }, { status: 201 });
   } catch (error: any) {

@@ -11,6 +11,8 @@ interface ActivityTabProps {
   alerts: AlertItem[];
   pointsBalance: number;
   pointLedger: PointLedgerItem[];
+  dailyViewsUsed: number;
+  watchlistCount: number;
   onMarkAllAlertsRead: () => void;
   onGoShare: () => void;
   onGoWatchlist: () => void;
@@ -20,11 +22,15 @@ export default function ActivityTab({
   alerts,
   pointsBalance,
   pointLedger,
+  dailyViewsUsed,
+  watchlistCount,
   onMarkAllAlertsRead,
   onGoShare,
   onGoWatchlist,
 }: ActivityTabProps) {
   const unreadCount = alerts.filter((a) => !a.read).length;
+  const freeViewsRemaining = Math.max(0, POINTS_CONFIG.dailyFreeViews - dailyViewsUsed);
+  const paidWatchCount = Math.max(0, watchlistCount - POINTS_CONFIG.freeWatchlistCount);
 
   return (
     <div className="page-container">
@@ -93,9 +99,13 @@ export default function ActivityTab({
           </div>
 
           <div className="points-policy-strip">
-            <span>PDF 공유 <strong>+{POINTS_CONFIG.uploadReward}{POINTS_CONFIG.unit}</strong></span>
-            <span>타인 PDF 열람 <strong>-{POINTS_CONFIG.viewCost}{POINTS_CONFIG.unit}</strong></span>
-            <span>변동 알림 <strong>-{POINTS_CONFIG.monitorCost}{POINTS_CONFIG.unit}</strong></span>
+            <span>최신 PDF 공유 <strong>+{POINTS_CONFIG.uploadReward}{POINTS_CONFIG.unit}</strong></span>
+            <span>
+              PDF 조회 <strong>일 {POINTS_CONFIG.dailyFreeViews}회 무료</strong> (잔여 {freeViewsRemaining}회 · 초과 -{POINTS_CONFIG.viewCost}{POINTS_CONFIG.unit})
+            </span>
+            <span>
+              변동 알림 <strong>{POINTS_CONFIG.freeWatchlistCount}건 무료</strong> (추가 월 -{POINTS_CONFIG.monitorCost}{POINTS_CONFIG.unit}{paidWatchCount > 0 ? ` · 유료 ${paidWatchCount}건` : ''})
+            </span>
           </div>
 
           <ul className="ledger-list">

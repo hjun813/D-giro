@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { POINTS_CONFIG } from '@/lib/points-config';
+import { calculatePdfViewCharge, getKstDayBounds, POINTS_CONFIG } from '@/lib/points-config';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 export const runtime = 'nodejs';
@@ -33,23 +33,44 @@ export async function GET(
     return NextResponse.json({ message: '공개되지 않은 등기 자료예요.' }, { status: 403 });
   }
 
-  // 본인 업로드가 아닌 경우 포인트 차감 내역 기록 (이미 열람한 문서 제외, best-effort)
-  if (doc.uploaded_by !== user.id && POINTS_CONFIG.viewCost > 0) {
-    const { data: alreadyViewed } = await supabase
-      .from('point_ledger')
-      .select('id')
-      .eq('user_id', user.id)
-      .eq('reason', 'document_view')
-      .eq('ref_id', doc.id)
-      .limit(1);
+  // 본인 업로드가 아닌 경우 하루 10회 무료 후 건당 10P 차감 (이미 열람한 문서 제외, best-effort)
+  let pointsCharged = 0;
+  let dailyViewsUsed = 0;
 
-    if (!alreadyViewed || alreadyViewed.length === 0) {
+  if (doc.uploaded_by !== user.id) {
+    const { startIso, endIso } = getKstDayBounds();
+    const [{ data: alreadyViewed }, { data: todayViews }] = await Promise.all([
+      supabase
+        .from('point_ledger')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('reason', 'document_view')
+        .eq('ref_id', doc.id)
+        .limit(1),
+      supabase
+        .from('point_ledger')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('reason', 'document_view')
+        .gte('created_at', startIso)
+        .lt('created_at', endIso),
+    ]);
+
+    const already = Boolean(alreadyViewed && alreadyViewed.length > 0);
+    const todayCountBefore = todayViews?.length || 0;
+    const charge = calculatePdfViewCharge(todayCountBefore, already);
+    pointsCharged = charge.cost;
+    dailyViewsUsed = charge.usedTodayAfter;
+
+    if (!already) {
       await supabase.from('point_ledger').insert({
         user_id: user.id,
-        delta: -POINTS_CONFIG.viewCost,
+        delta: -charge.cost,
         reason: 'document_view',
         ref_id: doc.id,
-        note: `${doc.property_id} 공유 등기 PDF 열람`,
+        note: charge.isFree
+          ? `${doc.property_id} 공유 등기 PDF 조회 (일 무료 ${charge.usedTodayAfter}/${POINTS_CONFIG.dailyFreeViews}회)`
+          : `${doc.property_id} 공유 등기 PDF 조회 (무료 횟수 초과 -${charge.cost}${POINTS_CONFIG.unit})`,
       }).then(() => {}, () => {});
     }
   }
@@ -63,7 +84,13 @@ export async function GET(
   }
 
   return NextResponse.json(
-    { url: signed.signedUrl, expiresIn: 300 },
+    {
+      url: signed.signedUrl,
+      expiresIn: 300,
+      pointsCharged,
+      dailyViewsUsed,
+      dailyFreeViews: POINTS_CONFIG.dailyFreeViews,
+    },
     { headers: { 'Cache-Control': 'no-store' } },
   );
 }

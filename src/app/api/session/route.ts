@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { canManageRegistryMonitor } from '@/lib/monitor/access.server';
 import { getSupabaseConfig } from '@/lib/supabase/config';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
@@ -25,6 +26,7 @@ export async function GET() {
     {
       configured: true,
       user: { id: user.id, email: user.email || '' },
+      canManageMonitor: canManageRegistryMonitor(user),
       watchlist: (rows || []).map((row) => row.target_id),
     },
     { headers: { 'Cache-Control': 'no-store' } },

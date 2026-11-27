@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { POINTS_CONFIG } from '@/lib/points-config';
+import { calculateWatchlistCharge, POINTS_CONFIG } from '@/lib/points-config';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 async function loadWatchlist(supabase: NonNullable<Awaited<ReturnType<typeof createSupabaseServerClient>>>, userId: string) {
@@ -67,7 +67,13 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ message: '저장할 등기 대상을 확인해 주세요.' }, { status: 400 });
   }
 
+  let pointsCharged = 0;
+
   if (watched) {
+    // 기존 등록 목록을 확인해 메모·채널 수정 시 중복 차감을 방지하고, 무료 1건 초과 여부 계산
+    const existingItems = await loadWatchlist(supabase, user.id);
+    const alreadyWatched = existingItems.some((item) => item.targetId === targetId);
+
     const payload: Record<string, any> = { user_id: user.id, target_id: targetId, notify_channel: notifyChannel };
     if (memo !== undefined) payload.memo = memo;
 
@@ -81,13 +87,19 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ message: '관심 물건을 저장하지 못했어요.' }, { status: 500 });
     }
 
-    await supabase.from('point_ledger').insert({
-      user_id: user.id,
-      delta: -POINTS_CONFIG.monitorCost,
-      reason: 'monitor_subscribe',
-      ref_id: targetId,
-      note: `${targetId} 변동 알림 구독`,
-    }).then(() => {}, () => {});
+    if (!alreadyWatched) {
+      const charge = calculateWatchlistCharge(existingItems.length, 1);
+      pointsCharged = charge.totalCost;
+      if (pointsCharged > 0) {
+        await supabase.from('point_ledger').insert({
+          user_id: user.id,
+          delta: -pointsCharged,
+          reason: 'monitor_subscribe',
+          ref_id: targetId,
+          note: `${targetId} 변동 알림 추가 구독 (월 ${POINTS_CONFIG.monitorCost}${POINTS_CONFIG.unit})`,
+        }).then(() => {}, () => {});
+      }
+    }
   } else {
     const { error } = await supabase
       .from('watchlists')
@@ -105,6 +117,7 @@ export async function PUT(request: NextRequest) {
     user: { id: user.id, email: user.email || '' },
     watchlist: items.map((item) => item.targetId),
     items,
+    pointsCharged,
   });
 }
 
@@ -133,6 +146,10 @@ export async function POST(request: NextRequest) {
     }))
     .filter((row) => row.target_id.length > 0);
 
+  const existingItems = await loadWatchlist(supabase, user.id);
+  const existingSet = new Set(existingItems.map((item) => item.targetId));
+  const newlyAddedRows = rows.filter((row) => !existingSet.has(row.target_id));
+
   let { error } = await supabase.from('watchlists').upsert(rows, { onConflict: 'user_id,target_id' });
   if (error) {
     const retry = await supabase
@@ -145,6 +162,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message: '일괄 등록에 실패했어요.' }, { status: 500 });
   }
 
+  const charge = calculateWatchlistCharge(existingItems.length, newlyAddedRows.length);
+  if (charge.totalCost > 0) {
+    await supabase.from('point_ledger').insert({
+      user_id: user.id,
+      delta: -charge.totalCost,
+      reason: 'monitor_subscribe',
+      note: `변동 알림 ${charge.paidCount}건 추가 구독 (월 건당 ${POINTS_CONFIG.monitorCost}${POINTS_CONFIG.unit})`,
+    }).then(() => {}, () => {});
+  }
+
   const items = await loadWatchlist(supabase, user.id);
-  return NextResponse.json({ configured: true, added: rows.length, items }, { status: 201 });
+  return NextResponse.json(
+    { configured: true, added: newlyAddedRows.length, pointsCharged: charge.totalCost, items },
+    { status: 201 },
+  );
 }

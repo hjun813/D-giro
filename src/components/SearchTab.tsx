@@ -14,8 +14,7 @@ interface SearchTabProps {
   properties: RegistryProperty[];
   documents: RegistryDocumentItem[];
   watchlist: WatchItem[];
-  onOpenPdf: (property: RegistryProperty, doc: RegistryDocumentItem) => void;
-  onToggleWatch: (property: RegistryProperty) => void;
+  onSelectProperty: (property: RegistryProperty) => void;
   onGoShare: () => void;
 }
 
@@ -25,8 +24,7 @@ export default function SearchTab({
   properties,
   documents,
   watchlist,
-  onOpenPdf,
-  onToggleWatch,
+  onSelectProperty,
   onGoShare,
 }: SearchTabProps) {
   const [query, setQuery] = useState('');
@@ -159,10 +157,23 @@ export default function SearchTab({
             {filtered.map(({ property, latestDoc, docCount }) => {
               const watched = watchedSet.has(property.id);
               return (
-                <article key={property.id} className="property-card">
+                <article
+                  key={property.id}
+                  className="property-card is-clickable"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onSelectProperty(property)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelectProperty(property);
+                    }
+                  }}
+                >
                   <div className="property-card-top">
                     <div className="card-badges">
                       <span className="badge badge-info">{property.propertyType}</span>
+                      {watched && <span className="badge badge-success">알림 구독 중</span>}
                       {latestDoc?.source === 'supabase' && <span className="badge badge-success">실제 공유 PDF</span>}
                       {latestDoc?.riskFlags && latestDoc.riskFlags.length > 0 && (
                         <span className="badge badge-danger">{latestDoc.riskFlags.join(', ')}</span>
@@ -192,7 +203,7 @@ export default function SearchTab({
                         <strong className="meta-value">{formatKoreanMoney(latestDoc.mortgageAmount)}</strong>
                       </div>
                       <div>
-                        <span className="meta-label">공유 버전</span>
+                        <span className="meta-label">공유 이력</span>
                         <strong className="meta-value">{docCount}건</strong>
                       </div>
                     </div>
@@ -200,27 +211,11 @@ export default function SearchTab({
                     <p className="property-empty-doc">아직 등록된 공유 PDF가 없습니다.</p>
                   )}
 
-                  <div className="property-card-actions">
-                    {latestDoc ? (
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        onClick={() => onOpenPdf(property, latestDoc)}
-                      >
-                        PDF 바로 보기
-                      </button>
-                    ) : (
-                      <button type="button" className="btn btn-soft" onClick={onGoShare}>
-                        첫 PDF 공유하기
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className={watched ? 'btn btn-secondary is-active' : 'btn btn-secondary'}
-                      onClick={() => onToggleWatch(property)}
-                    >
-                      {watched ? '알림 구독 중' : '변동 알림 켜기'}
-                    </button>
+                  <div className="property-card-footer">
+                    <span className="property-card-hint">
+                      {latestDoc ? `공유 등기 ${docCount}건 · 알림 설정` : '상세 정보 · 변동 알림 설정'}
+                    </span>
+                    <span className="property-card-cta">상세 보기 →</span>
                   </div>
                 </article>
               );

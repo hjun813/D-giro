@@ -10,11 +10,17 @@ import {
   type RegistryProperty,
   type WatchItem,
 } from '@/lib/demo-catalog';
-import { POINTS_CONFIG } from '@/lib/points-config';
+import {
+  calculatePdfViewCharge,
+  calculateWatchlistCharge,
+  getKstDateKey,
+  POINTS_CONFIG,
+} from '@/lib/points-config';
+import { normalizePropertyUid } from '@/lib/monitor';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import ActivityTab from './ActivityTab';
 import AuthModal from './AuthModal';
-import PdfViewerModal from './PdfViewerModal';
+import PropertyDetailModal from './PropertyDetailModal';
 import SearchTab from './SearchTab';
 import ShareTab from './ShareTab';
 import WatchlistTab from './WatchlistTab';
@@ -37,6 +43,7 @@ export default function DeunggiroApp({
 }) {
   const [tab, setTab] = useState<AppTab>(initialTab);
   const [supabaseConfigured, setSupabaseConfigured] = useState(false);
+  const [canManageMonitor, setCanManageMonitor] = useState(false);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [authModal, setAuthModal] = useState<'login' | 'register' | null>(initialAuthModal);
 
@@ -54,17 +61,15 @@ export default function DeunggiroApp({
     },
   ]);
   const [viewedDocIds, setViewedDocIds] = useState<string[]>([]);
+  const [dailyViewTracker, setDailyViewTracker] = useState<{ dateKey: string; count: number }>(() => ({
+    dateKey: getKstDateKey(),
+    count: 0,
+  }));
   const [checkRound, setCheckRound] = useState(0);
 
-  // PDF viewer modal state
-  const [pdfModal, setPdfModal] = useState<{
-    open: boolean;
-    property: RegistryProperty | null;
-    document: RegistryDocumentItem | null;
-    url: string | null;
-    loading: boolean;
-    error: string | null;
-  }>({ open: false, property: null, document: null, url: null, loading: false, error: null });
+  // Property detail modal & new-tab PDF opening state
+  const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
+  const [openingDocId, setOpeningDocId] = useState<string | null>(null);
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -85,6 +90,12 @@ export default function DeunggiroApp({
       if (Array.isArray(parsed.alerts)) setAlerts(parsed.alerts);
       if (Array.isArray(parsed.pointLedger) && parsed.pointLedger.length > 0) setPointLedger(parsed.pointLedger);
       if (Array.isArray(parsed.viewedDocIds)) setViewedDocIds(parsed.viewedDocIds);
+      if (parsed.dailyViewTracker && parsed.dailyViewTracker.dateKey === getKstDateKey()) {
+        setDailyViewTracker({
+          dateKey: parsed.dailyViewTracker.dateKey,
+          count: Number(parsed.dailyViewTracker.count) || 0,
+        });
+      }
       if (typeof parsed.checkRound === 'number') setCheckRound(parsed.checkRound);
     } catch {
       // ignore storage failures
@@ -93,15 +104,16 @@ export default function DeunggiroApp({
 
   // Persist local demo state
   useEffect(() => {
+    if (supabaseConfigured && user) return;
     try {
       window.localStorage.setItem(
         LOCAL_STATE_KEY,
-        JSON.stringify({ watchlist, alerts, pointLedger, viewedDocIds, checkRound }),
+        JSON.stringify({ watchlist, alerts, pointLedger, viewedDocIds, dailyViewTracker, checkRound }),
       );
     } catch {
       // ignore storage failures
     }
-  }, [watchlist, alerts, pointLedger, viewedDocIds, checkRound]);
+  }, [supabaseConfigured, user, watchlist, alerts, pointLedger, viewedDocIds, dailyViewTracker, checkRound]);
 
   const hydrateFromServer = useCallback(async () => {
     try {
@@ -117,6 +129,7 @@ export default function DeunggiroApp({
 
       const configured = Boolean(sessionData?.configured);
       setSupabaseConfigured(configured);
+      setCanManageMonitor(Boolean(sessionData?.canManageMonitor));
       setUser(sessionData?.user || null);
 
       if (docsData?.configured && Array.isArray(docsData.documents)) {
@@ -166,22 +179,89 @@ export default function DeunggiroApp({
       }
 
       if (configured && sessionData?.user) {
-        const watchRes = await fetch('/api/watchlist', { cache: 'no-store' });
+        const [watchRes, monitorRes] = await Promise.all([
+          fetch('/api/watchlist', { cache: 'no-store' }),
+          fetch('/api/monitor/notifications', { cache: 'no-store' }),
+        ]);
         const watchData = await watchRes.json().catch(() => null);
+        const monitorData = await monitorRes.json().catch(() => null);
+
+        const stateByTarget = new Map<string, any>();
+        if (Array.isArray(monitorData?.monitorStates)) {
+          for (const st of monitorData.monitorStates) {
+            stateByTarget.set(st.targetId, st);
+          }
+        }
+
+        if (Array.isArray(monitorData?.notifications)) {
+          const allPropMap = new Map<string, RegistryProperty>();
+          for (const p of DEMO_PROPERTIES) allPropMap.set(p.id, p);
+          if (Array.isArray(docsData?.properties)) {
+            for (const p of docsData.properties) {
+              const uid = normalizePropertyUid(p.registry_unique_no || p.id.replace(/^iros:/, ''));
+              const item: RegistryProperty = {
+                id: p.id,
+                registryUniqueNo: p.registry_unique_no || p.id.replace(/^iros:/, ''),
+                address: p.address || '',
+                buildingName: p.building_name || p.location_name || '등록 부동산',
+                unitName: p.unit_name || '',
+                propertyType: p.property_type || '집합건물',
+                areaText: p.area_text || '',
+                structure: p.structure || '',
+              };
+              allPropMap.set(p.id, item);
+              if (uid) allPropMap.set(uid, item);
+            }
+          }
+
+          const dbAlerts: AlertItem[] = monitorData.notifications.map((n: any) => {
+            const uid = normalizePropertyUid(n.propertyId) || n.propertyId;
+            const prop = allPropMap.get(n.propertyId) || allPropMap.get(uid);
+            const title = prop
+              ? `${prop.buildingName}${prop.unitName ? ` ${prop.unitName}` : ''} (${uid})`
+              : `고유번호 ${uid}`;
+            return {
+              id: n.id,
+              propertyId: n.propertyId,
+              title,
+              kind: n.kind === 'completed' ? 'completed' : 'received',
+              message:
+                n.kind === 'completed'
+                  ? '등기 처리가 완료되었습니다. 최신 등기부등본 PDF를 확인해 주세요.'
+                  : '새로운 등기신청 접수가 감지되었습니다. 권리 변동 여부를 확인해 주세요.',
+              createdAt: n.createdAt,
+              read: Boolean(n.read),
+            };
+          });
+          setAlerts(dbAlerts);
+        }
+
         if (Array.isArray(watchData?.items)) {
           setWatchlist((prev) => {
             const prevMap = new Map(prev.map((w) => [w.targetId, w]));
             return watchData.items.map((row: any) => {
-              const existing = prevMap.get(row.targetId);
+              const existing = monitorRes.ok ? undefined : prevMap.get(row.targetId);
+              const st = stateByTarget.get(row.targetId);
+              let derivedStatus: WatchItem['status'] = existing?.status ?? 'normal';
+              if (st) {
+                if (st.lastStatus && st.lastStatus !== 'ok') {
+                  derivedStatus = 'failed';
+                } else if (st.hasCompletedEvent) {
+                  derivedStatus = 'completed';
+                } else if (st.hasOpenApplication) {
+                  derivedStatus = 'received';
+                }
+              }
+
               return {
                 targetId: row.targetId,
                 memo: row.memo || existing?.memo || '',
                 notifyChannel: row.notifyChannel || existing?.notifyChannel || 'in_app',
                 createdAt: row.createdAt || new Date().toISOString(),
-                status: existing?.status || 'normal',
-                lastCheckedAt: existing?.lastCheckedAt || null,
-                lastSuccessAt: existing?.lastSuccessAt || null,
-                needsUpdate: existing?.needsUpdate || false,
+                status: derivedStatus,
+                lastCheckedAt: st?.lastAttemptAt || existing?.lastCheckedAt || null,
+                lastSuccessAt: st?.lastSuccessAt || existing?.lastSuccessAt || null,
+                needsUpdate: st?.hasCompletedEvent ?? existing?.needsUpdate ?? false,
               };
             });
           });
@@ -199,9 +279,11 @@ export default function DeunggiroApp({
             },
           ]);
         }
+        return monitorRes.ok;
       }
+      return true;
     } catch {
-      // keep demo fallback
+      return false;
     }
   }, []);
 
@@ -237,45 +319,81 @@ export default function DeunggiroApp({
     [],
   );
 
-  async function handleOpenPdf(property: RegistryProperty, doc: RegistryDocumentItem) {
-    setPdfModal({ open: true, property, document: doc, url: null, loading: true, error: null });
-
+  async function handleOpenPdfNewTab(property: RegistryProperty, doc: RegistryDocumentItem) {
     const alreadyViewed = viewedDocIds.includes(doc.id);
+    const todayKey = getKstDateKey();
+    const todayCountBefore = dailyViewTracker.dateKey === todayKey ? dailyViewTracker.count : 0;
 
     if (doc.source === 'supabase' && doc.pdfUrl?.startsWith('/api/documents/')) {
+      setOpeningDocId(doc.id);
+      // 비동기 응답 전 동기적으로 새 탭을 열어 팝업 차단 회피
+      const popup = window.open('', '_blank');
+      if (popup) {
+        popup.document.title = `${property.buildingName} 등기부등본 불러오는 중...`;
+        popup.document.body.innerHTML =
+          '<div style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;color:#334155;">등기부등본 PDF를 불러오는 중입니다...</div>';
+      }
+
       try {
         const res = await fetch(doc.pdfUrl, { cache: 'no-store' });
-        const data = await res.json();
-        if (!res.ok) {
-          setPdfModal((prev) => ({
-            ...prev,
-            loading: false,
-            error: data?.message || 'PDF를 열람할 수 없어요.',
-          }));
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.url) {
+          popup?.close();
+          showToast(data?.message || 'PDF를 열람할 수 없어요.');
           return;
         }
-        setPdfModal((prev) => ({ ...prev, loading: false, url: data.url }));
+        if (popup && !popup.closed) {
+          popup.location.href = data.url;
+        } else {
+          window.open(data.url, '_blank', 'noopener,noreferrer');
+        }
         if (!doc.uploadedByMe && !alreadyViewed) {
+          const usedToday = typeof data.dailyViewsUsed === 'number' ? data.dailyViewsUsed : todayCountBefore + 1;
+          const cost = typeof data.pointsCharged === 'number'
+            ? data.pointsCharged
+            : calculatePdfViewCharge(todayCountBefore, false).cost;
+
           setViewedDocIds((prev) => [...prev, doc.id]);
-          addLocalLedger(-POINTS_CONFIG.viewCost, 'document_view', `${property.buildingName} PDF 열람`, doc.id);
+          setDailyViewTracker({ dateKey: todayKey, count: usedToday });
+          if (cost > 0) {
+            addLocalLedger(-cost, 'document_view', `${property.buildingName} PDF 조회 (일 무료 초과)`, doc.id);
+            showToast(`오늘 무료 조회(${POINTS_CONFIG.dailyFreeViews}회)를 모두 사용해 -${cost}${POINTS_CONFIG.unit}가 차감되었어요.`);
+          } else {
+            showToast(`오늘 무료 조회 ${usedToday}/${POINTS_CONFIG.dailyFreeViews}회 사용`);
+          }
         }
       } catch {
-        setPdfModal((prev) => ({ ...prev, loading: false, error: 'PDF 열람 링크를 불러오지 못했어요.' }));
+        popup?.close();
+        showToast('PDF 열람 링크를 불러오지 못했어요.');
+      } finally {
+        setOpeningDocId(null);
       }
       return;
     }
 
-    // Demo or local blob PDF
-    setPdfModal((prev) => ({ ...prev, loading: false, url: doc.pdfUrl }));
+    // Demo or local blob PDF: 새 탭으로 즉시 열람
+    if (!doc.pdfUrl) {
+      showToast('표시할 PDF 파일이 없어요.');
+      return;
+    }
+    window.open(doc.pdfUrl, '_blank', 'noopener,noreferrer');
     if (!doc.uploadedByMe && !alreadyViewed) {
+      const charge = calculatePdfViewCharge(todayCountBefore, false);
       setViewedDocIds((prev) => [...prev, doc.id]);
-      addLocalLedger(-POINTS_CONFIG.viewCost, 'document_view', `${property.buildingName} PDF 열람`, doc.id);
+      setDailyViewTracker({ dateKey: todayKey, count: charge.usedTodayAfter });
+      if (charge.cost > 0) {
+        addLocalLedger(-charge.cost, 'document_view', `${property.buildingName} PDF 조회 (일 무료 초과)`, doc.id);
+        showToast(`오늘 무료 조회(${POINTS_CONFIG.dailyFreeViews}회)를 모두 사용해 -${charge.cost}${POINTS_CONFIG.unit}가 차감되었어요.`);
+      } else {
+        showToast(`오늘 무료 조회 ${charge.usedTodayAfter}/${POINTS_CONFIG.dailyFreeViews}회 사용`);
+      }
     }
   }
 
   async function handleToggleWatch(property: RegistryProperty) {
     const exists = watchlist.some((w) => w.targetId === property.id);
     const nextWatched = !exists;
+    const charge = nextWatched ? calculateWatchlistCharge(watchlist.length, 1) : { freeCount: 0, paidCount: 0, totalCost: 0 };
 
     if (supabaseConfigured && user) {
       try {
@@ -309,8 +427,17 @@ export default function DeunggiroApp({
         },
         ...prev,
       ]);
-      addLocalLedger(-POINTS_CONFIG.monitorCost, 'monitor_subscribe', `${property.buildingName} 변동 알림 구독`, property.id);
-      showToast(`${property.buildingName} 변동 알림을 켰어요.`);
+      if (charge.totalCost > 0) {
+        addLocalLedger(
+          -charge.totalCost,
+          'monitor_subscribe',
+          `${property.buildingName} 변동 알림 추가 구독 (월 ${POINTS_CONFIG.monitorCost}${POINTS_CONFIG.unit})`,
+          property.id,
+        );
+        showToast(`${property.buildingName} 변동 알림을 켰어요. (-${charge.totalCost}${POINTS_CONFIG.unit} / 월)`);
+      } else {
+        showToast(`${property.buildingName} 변동 알림을 무료로 켰어요. (단건 무료 혜택)`);
+      }
     } else {
       setWatchlist((prev) => prev.filter((w) => w.targetId !== property.id));
       showToast(`${property.buildingName} 변동 알림을 해제했어요.`);
@@ -332,10 +459,11 @@ export default function DeunggiroApp({
   function handleUpdateWatchMeta(
     targetId: string,
     patch: { memo?: string; notifyChannel?: 'in_app' | 'kakao' | 'sms' },
+    persist = true,
   ) {
+    const current = watchlist.find((w) => w.targetId === targetId);
     setWatchlist((prev) => prev.map((w) => (w.targetId === targetId ? { ...w, ...patch } : w)));
-    if (supabaseConfigured && user) {
-      const current = watchlist.find((w) => w.targetId === targetId);
+    if (persist && supabaseConfigured && user) {
       void fetch('/api/watchlist', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -356,6 +484,8 @@ export default function DeunggiroApp({
       showToast('이미 모두 관리 목록에 등록되어 있어요.');
       return;
     }
+
+    const charge = calculateWatchlistCharge(watchlist.length, uniqueNew.length);
 
     if (supabaseConfigured && user) {
       await fetch('/api/watchlist', {
@@ -379,7 +509,18 @@ export default function DeunggiroApp({
       })),
       ...prev,
     ]);
-    showToast(`${uniqueNew.length}건의 관리 물건을 일괄 등록했어요.`);
+    if (charge.totalCost > 0) {
+      addLocalLedger(
+        -charge.totalCost,
+        'monitor_subscribe',
+        `변동 알림 ${charge.paidCount}건 추가 구독 (월 건당 ${POINTS_CONFIG.monitorCost}${POINTS_CONFIG.unit})`,
+      );
+      showToast(
+        `${uniqueNew.length}건 일괄 등록 완료 (${charge.freeCount > 0 ? `${charge.freeCount}건 무료 · ` : ''}${charge.paidCount}건 -${charge.totalCost}${POINTS_CONFIG.unit})`,
+      );
+    } else {
+      showToast(`${uniqueNew.length}건의 관리 물건을 무료로 등록했어요.`);
+    }
   }
 
   function handleDocumentsPublished(
@@ -393,13 +534,14 @@ export default function DeunggiroApp({
     setDocuments((prev) => [...items.map((i) => i.document), ...prev]);
 
     const totalPoints = items.reduce((sum, i) => sum + i.points, 0);
+    const rewardedCount = items.filter((i) => i.points > 0).length;
     if (totalPoints > 0) {
       addLocalLedger(
         totalPoints,
         'upload_reward',
-        items.length === 1
-          ? `${items[0].property.buildingName} 등기 PDF 공유`
-          : `등기 PDF ${items.length}건 대량 공유`,
+        rewardedCount === 1
+          ? `${items.find((i) => i.points > 0)!.property.buildingName} 최신 등기 PDF 공유`
+          : `최신 등기 PDF ${rewardedCount}건 공유`,
       );
     }
 
@@ -409,11 +551,20 @@ export default function DeunggiroApp({
       prev.map((w) => (updatedIds.has(w.targetId) ? { ...w, needsUpdate: false, status: 'normal' } : w)),
     );
 
-    showToast(`등기 PDF ${items.length}건 공유 완료! +${totalPoints.toLocaleString('ko-KR')}${POINTS_CONFIG.unit} 적립`);
+    if (totalPoints > 0) {
+      showToast(`등기 PDF ${items.length}건 공유 완료! (최신 ${rewardedCount}건 +${totalPoints.toLocaleString('ko-KR')}${POINTS_CONFIG.unit} 적립)`);
+    } else {
+      showToast(`등기 PDF ${items.length}건 이력 등록 완료 (기존보다 이전 시점 등기는 포인트 미적립)`);
+    }
   }
 
-  function handleRunMonitoringCheck() {
+  async function handleRunMonitoringCheck() {
     if (watchlist.length === 0) return;
+    if (supabaseConfigured && user) {
+      const loaded = await hydrateFromServer();
+      showToast(loaded ? '저장된 변동 확인 내역을 불러왔어요.' : '변동 확인 내역을 불러오지 못했어요.');
+      return;
+    }
     const now = new Date().toISOString();
     const nextRound = checkRound + 1;
     setCheckRound(nextRound);
@@ -469,10 +620,37 @@ export default function DeunggiroApp({
     }
   }
 
+  const selectedProperty = useMemo(
+    () => (selectedPropertyId ? properties.find((p) => p.id === selectedPropertyId) || null : null),
+    [selectedPropertyId, properties],
+  );
+
+  const selectedPropertyDocs = useMemo(() => {
+    if (!selectedPropertyId) return [];
+    return documents
+      .filter((d) => d.propertyId === selectedPropertyId)
+      .sort((a, b) => (b.issuedAt || '').localeCompare(a.issuedAt || ''));
+  }, [selectedPropertyId, documents]);
+
+  const selectedWatchItem = useMemo(
+    () => (selectedPropertyId ? watchlist.find((w) => w.targetId === selectedPropertyId) || null : null),
+    [selectedPropertyId, watchlist],
+  );
+
+  async function handleMarkAllAlertsRead() {
+    setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
+    if (supabaseConfigured && user) {
+      await fetch('/api/monitor/notifications', { method: 'PATCH' }).catch(() => {});
+    }
+  }
+
   async function handleSignOut() {
     const supabase = getSupabaseBrowserClient();
     if (supabase) await supabase.auth.signOut();
     setUser(null);
+    setCanManageMonitor(false);
+    setWatchlist([]);
+    setAlerts([]);
     showToast('로그아웃했어요.');
   }
 
@@ -553,8 +731,7 @@ export default function DeunggiroApp({
             properties={properties}
             documents={documents}
             watchlist={watchlist}
-            onOpenPdf={handleOpenPdf}
-            onToggleWatch={handleToggleWatch}
+            onSelectProperty={(prop) => setSelectedPropertyId(prop.id)}
             onGoShare={() => setTab('share')}
           />
         )}
@@ -562,6 +739,7 @@ export default function DeunggiroApp({
           <ShareTab
             isLoggedIn={Boolean(user)}
             supabaseConfigured={supabaseConfigured}
+            existingDocuments={documents}
             onRequireLogin={() => setAuthModal('login')}
             onDocumentsPublished={handleDocumentsPublished}
             onToast={showToast}
@@ -572,7 +750,9 @@ export default function DeunggiroApp({
             properties={properties}
             documents={documents}
             watchlist={watchlist}
-            onOpenPdf={handleOpenPdf}
+            canManageMonitor={canManageMonitor}
+            usesSavedMonitoring={Boolean(supabaseConfigured && user)}
+            onOpenPdf={handleOpenPdfNewTab}
             onRemoveWatch={handleRemoveWatch}
             onUpdateWatchMeta={handleUpdateWatchMeta}
             onBulkAddWatch={handleBulkAddWatch}
@@ -585,25 +765,27 @@ export default function DeunggiroApp({
             alerts={alerts}
             pointsBalance={pointsBalance}
             pointLedger={pointLedger}
-            onMarkAllAlertsRead={() => setAlerts((prev) => prev.map((a) => ({ ...a, read: true })))}
+            dailyViewsUsed={dailyViewTracker.dateKey === getKstDateKey() ? dailyViewTracker.count : 0}
+            watchlistCount={watchlist.length}
+            onMarkAllAlertsRead={handleMarkAllAlertsRead}
             onGoShare={() => setTab('share')}
             onGoWatchlist={() => setTab('watchlist')}
           />
         )}
       </main>
 
-      <PdfViewerModal
-        open={pdfModal.open}
-        property={pdfModal.property}
-        document={pdfModal.document}
-        pdfUrl={pdfModal.url}
-        loading={pdfModal.loading}
-        error={pdfModal.error}
-        isWatched={Boolean(pdfModal.property && watchlist.some((w) => w.targetId === pdfModal.property?.id))}
-        onToggleWatch={() => {
-          if (pdfModal.property) void handleToggleWatch(pdfModal.property);
-        }}
-        onClose={() => setPdfModal((prev) => ({ ...prev, open: false }))}
+      <PropertyDetailModal
+        open={selectedProperty !== null}
+        property={selectedProperty}
+        documents={selectedPropertyDocs}
+        watchItem={selectedWatchItem}
+        watchlistCount={watchlist.length}
+        openingDocId={openingDocId}
+        onOpenPdfNewTab={handleOpenPdfNewTab}
+        onToggleWatch={handleToggleWatch}
+        onUpdateWatchMeta={handleUpdateWatchMeta}
+        onGoShare={() => setTab('share')}
+        onClose={() => setSelectedPropertyId(null)}
       />
 
       <AuthModal

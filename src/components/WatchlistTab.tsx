@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import {
   formatKstDateTime,
@@ -13,9 +14,15 @@ interface WatchlistTabProps {
   properties: RegistryProperty[];
   documents: RegistryDocumentItem[];
   watchlist: WatchItem[];
+  canManageMonitor: boolean;
+  usesSavedMonitoring: boolean;
   onOpenPdf: (property: RegistryProperty, doc: RegistryDocumentItem) => void;
   onRemoveWatch: (targetId: string) => void;
-  onUpdateWatchMeta: (targetId: string, patch: { memo?: string; notifyChannel?: 'in_app' | 'kakao' | 'sms' }) => void;
+  onUpdateWatchMeta: (
+    targetId: string,
+    patch: { memo?: string; notifyChannel?: 'in_app' | 'kakao' | 'sms' },
+    persist?: boolean,
+  ) => void;
   onBulkAddWatch: (entries: Array<{ targetId: string; memo: string }>) => void;
   onRunMonitoringCheck: () => void;
   onGoSearch: () => void;
@@ -31,6 +38,8 @@ export default function WatchlistTab({
   properties,
   documents,
   watchlist,
+  canManageMonitor,
+  usesSavedMonitoring,
   onOpenPdf,
   onRemoveWatch,
   onUpdateWatchMeta,
@@ -62,7 +71,7 @@ export default function WatchlistTab({
     for (const item of watchlist) {
       if (item.status === 'received' || item.status === 'completed') changed += 1;
       if (item.needsUpdate) needsUpdate += 1;
-      if (item.status === 'normal') normal += 1;
+      if (item.status === 'normal' && item.lastSuccessAt) normal += 1;
     }
     return { total: watchlist.length, changed, needsUpdate, normal };
   }, [watchlist]);
@@ -72,7 +81,7 @@ export default function WatchlistTab({
     return watchlist.filter((item) => {
       if (statusFilter === 'changed' && item.status !== 'received' && item.status !== 'completed') return false;
       if (statusFilter === 'needs_update' && !item.needsUpdate) return false;
-      if (statusFilter === 'normal' && item.status !== 'normal') return false;
+      if (statusFilter === 'normal' && (item.status !== 'normal' || !item.lastSuccessAt)) return false;
       if (!q) return true;
       const prop = propMap.get(item.targetId);
       const hay = [
@@ -128,6 +137,7 @@ export default function WatchlistTab({
           </p>
         </div>
         <div className="head-actions">
+          {canManageMonitor && <Link href="/admin/monitor" className="btn btn-secondary">조회 결과 등록</Link>}
           <button type="button" className="btn btn-secondary" onClick={() => setBulkOpen((v) => !v)}>
             고유번호 일괄 등록
           </button>
@@ -137,7 +147,7 @@ export default function WatchlistTab({
             disabled={watchlist.length === 0}
             onClick={onRunMonitoringCheck}
           >
-            변동 확인 실행
+            {usesSavedMonitoring ? '확인 내역 새로고침' : '변동 확인 체험'}
           </button>
         </div>
       </section>
@@ -185,7 +195,7 @@ export default function WatchlistTab({
           <h3>아직 변동 알림을 켠 부동산이 없어요</h3>
           <p>
             등기 검색에서 내 전세집이나 관리 중인 담보 물건을 추가하면 변동 발생 시 알림을 보내드립니다.
-            (구독 기준: 건당 {POINTS_CONFIG.monitorCost}{POINTS_CONFIG.unit})
+            ({POINTS_CONFIG.freeWatchlistCount}건 무료 · 추가 건당 월 {POINTS_CONFIG.monitorCost}{POINTS_CONFIG.unit})
           </p>
           <div className="empty-actions">
             <button type="button" className="btn btn-primary" onClick={onGoSearch}>
@@ -241,7 +251,13 @@ export default function WatchlistTab({
                           className="inline-memo"
                           value={item.memo}
                           placeholder="메모 (예: 내 전세집)"
-                          onChange={(e) => onUpdateWatchMeta(item.targetId, { memo: e.target.value })}
+                          onChange={(e) => onUpdateWatchMeta(item.targetId, { memo: e.target.value }, false)}
+                          onBlur={(e) => onUpdateWatchMeta(item.targetId, { memo: e.target.value }, true)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              (e.currentTarget as HTMLInputElement).blur();
+                            }
+                          }}
                         />
                       </td>
                       <td>
@@ -258,7 +274,9 @@ export default function WatchlistTab({
                         {item.status === 'received' && <span className="badge badge-info">등기신청 접수</span>}
                         {item.status === 'completed' && <span className="badge badge-warning">등기 완료</span>}
                         {item.status === 'failed' && <span className="badge badge-danger">조회 실패</span>}
-                        {item.status === 'normal' && <span className="badge badge-success">변동 없음</span>}
+                        {item.status === 'normal' && (item.lastSuccessAt
+                          ? <span className="badge badge-success">변동 없음</span>
+                          : <span className="badge badge-neutral">확인 대기</span>)}
                         <div className="cell-sub-sm">확인: {formatKstDateTime(item.lastSuccessAt)}</div>
                       </td>
                       <td>
